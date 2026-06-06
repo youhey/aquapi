@@ -105,6 +105,67 @@ class CliTests(unittest.TestCase):
         self.assertEqual(kwargs["host"], "127.0.0.1")
         self.assertEqual(kwargs["port"], 18081)
 
+    def test_log_once_command_writes_log(self) -> None:
+        with TemporaryDirectory() as tmp_dir:
+            tmp_path = Path(tmp_dir)
+            config_path = tmp_path / "aquapi.json"
+            data_dir = tmp_path / "data"
+            config_path.write_text(
+                json.dumps(
+                    {
+                        "logging": {
+                            "enabled": True,
+                            "interval_seconds": 60,
+                            "data_dir": str(data_dir),
+                            "file_pattern": "readings-%Y-%m-%d.jsonl",
+                            "retention_days": 30,
+                        },
+                        "sensors": {},
+                    },
+                    ensure_ascii=False,
+                ),
+                encoding="utf-8",
+            )
+
+            with (
+                patch("aquapi.cli.log_once") as log_once,
+                patch("sys.stdout", new_callable=StringIO) as stdout,
+            ):
+                log_once.return_value.path = data_dir / "readings-2026-06-06.jsonl"
+
+                exit_code = main(["log-once", "--config", str(config_path)])
+
+        self.assertEqual(exit_code, 0)
+        log_once.assert_called_once()
+        self.assertIn("readings-2026-06-06.jsonl", stdout.getvalue())
+
+    def test_collect_command_calls_collector(self) -> None:
+        with TemporaryDirectory() as tmp_dir:
+            tmp_path = Path(tmp_dir)
+            config_path = tmp_path / "aquapi.json"
+            config_path.write_text(
+                json.dumps(
+                    {
+                        "logging": {
+                            "enabled": True,
+                            "interval_seconds": 60,
+                            "data_dir": str(tmp_path / "data"),
+                            "file_pattern": "readings-%Y-%m-%d.jsonl",
+                            "retention_days": 30,
+                        },
+                        "sensors": {},
+                    },
+                    ensure_ascii=False,
+                ),
+                encoding="utf-8",
+            )
+
+            with patch("aquapi.cli.collect_forever") as collect_forever:
+                exit_code = main(["collect", "--config", str(config_path)])
+
+        self.assertEqual(exit_code, 0)
+        collect_forever.assert_called_once()
+
 
 if __name__ == "__main__":
     unittest.main()

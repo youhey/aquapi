@@ -7,6 +7,7 @@ from pathlib import Path
 
 from aquapi.api import serve_api
 from aquapi.config import AppConfig, load_config
+from aquapi.logs import collect_forever, log_once
 from aquapi.sensors import (
     configured_sensor_reading_to_dict,
     read_all_configured_sensors,
@@ -25,6 +26,12 @@ def build_parser() -> argparse.ArgumentParser:
     serve_parser.add_argument("--config", type=Path, required=True, help="センサー設定 JSON のパス")
     serve_parser.add_argument("--host", help="待ち受けホスト")
     serve_parser.add_argument("--port", type=int, help="待ち受けポート")
+
+    log_once_parser = subparsers.add_parser("log-once", help="現在のセンサー値を1回だけ保存します")
+    log_once_parser.add_argument("--config", type=Path, required=True, help="センサー設定 JSON のパス")
+
+    collect_parser = subparsers.add_parser("collect", help="指定間隔でセンサー値を保存し続けます")
+    collect_parser.add_argument("--config", type=Path, required=True, help="センサー設定 JSON のパス")
 
     return parser
 
@@ -61,6 +68,10 @@ def main(argv: list[str] | None = None) -> int:
         return run_read(as_json=args.json, config_path=args.config)
     if args.command == "serve":
         return run_serve(config_path=args.config, host=args.host, port=args.port)
+    if args.command == "log-once":
+        return run_log_once(config_path=args.config)
+    if args.command == "collect":
+        return run_collect(config_path=args.config)
 
     raise AssertionError(f"unsupported command: {args.command}")
 
@@ -83,6 +94,51 @@ def run_serve(*, config_path: Path, host: str | None, port: int | None) -> int:
         return 1
 
     return 0
+
+
+def run_log_once(*, config_path: Path) -> int:
+    config = _load_config_for_logging(config_path)
+    if config is None:
+        return 1
+
+    try:
+        result = log_once(config)
+    except OSError as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        return 1
+
+    print(str(result.path))
+    return 0
+
+
+def run_collect(*, config_path: Path) -> int:
+    config = _load_config_for_logging(config_path)
+    if config is None:
+        return 1
+
+    try:
+        collect_forever(config)
+    except KeyboardInterrupt:
+        return 0
+    except OSError as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        return 1
+
+    return 0
+
+
+def _load_config_for_logging(config_path: Path) -> AppConfig | None:
+    try:
+        config = load_config(config_path)
+    except (OSError, json.JSONDecodeError, ValueError) as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        return None
+
+    if not config.logging.enabled:
+        print("error: logging is disabled", file=sys.stderr)
+        return None
+
+    return config
 
 
 if __name__ == "__main__":

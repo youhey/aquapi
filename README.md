@@ -78,6 +78,13 @@ cp configs/aquapi.example.json configs/aquapi.json
 {
   "listen_addr": "0.0.0.0",
   "listen_port": 8081,
+  "logging": {
+    "enabled": true,
+    "interval_seconds": 60,
+    "data_dir": "/var/lib/aquapi",
+    "file_pattern": "readings-%Y-%m-%d.jsonl",
+    "retention_days": 30
+  },
   "sensors": {
     "28-00000020f5ed": {
       "name": "増田川水槽",
@@ -95,6 +102,8 @@ cp configs/aquapi.example.json configs/aquapi.json
 `min` 未満は `low`、`max` 超過は `high`、範囲内は `ok` です。設定にないセンサーは `unknown` として表示されます。
 
 API サーバーは `listen_addr` と `listen_port` で待ち受けます。初期ポートは `8081` です。
+
+ログ保存は `logging` で設定します。`interval_seconds` は継続記録の間隔、`data_dir` は JSONL の保存先、`file_pattern` は日次ローテーション用のファイル名、`retention_days` は保持日数です。
 
 ## CLI 実行
 
@@ -165,6 +174,8 @@ API 一覧:
 - `GET /api/readings`
 - `GET /api/summary`
 - `GET /api/sensors/{sensor_id}`
+- `GET /api/readings/series?sensor_id={sensor_id}&range=24h`
+- `GET /api/readings/summary?range=24h`
 
 curl 例:
 
@@ -176,3 +187,61 @@ curl http://aquapi.local:8081/api/sensors/28-00000020f5ed
 ```
 
 存在しないセンサーIDは JSON エラー付きで 404 を返します。
+
+## ログ保存
+
+現在値を1回だけ JSONL に保存します。
+
+```bash
+python -m aquapi.cli log-once --config configs/aquapi.json
+```
+
+指定間隔で継続的に保存します。
+
+```bash
+python -m aquapi.cli collect --config configs/aquapi.json
+```
+
+保存形式は1行1測定時点の JSONL です。`file_pattern` の初期値では、日付ごとに `readings-YYYY-MM-DD.jsonl` が作成されます。
+
+```json
+{
+  "ts": "2026-06-06T12:00:00+09:00",
+  "sensors": [
+    {
+      "sensor_id": "28-00000020f5ed",
+      "name": "増田川水槽",
+      "type": "water",
+      "raw_temperature_c": 23.187,
+      "temperature_c": 23.187,
+      "offset": 0.0,
+      "status": "ok",
+      "crc_ok": true
+    }
+  ]
+}
+```
+
+`retention_days` より古い日次ログは、起動時または保存時に削除されます。
+
+履歴 API:
+
+- `GET /api/readings/series?sensor_id={sensor_id}&range=24h`
+- `GET /api/readings/series?name={name}&range=24h`
+- `GET /api/readings/summary?range=24h`
+
+対応 range:
+
+- `1h`
+- `6h`
+- `24h`
+- `7d`
+- `30d`
+
+curl 例:
+
+```bash
+curl "http://aquapi.local:8081/api/readings/series?sensor_id=28-00000020f5ed&range=24h"
+curl "http://aquapi.local:8081/api/readings/series?name=増田川水槽&range=24h"
+curl "http://aquapi.local:8081/api/readings/summary?range=24h"
+```

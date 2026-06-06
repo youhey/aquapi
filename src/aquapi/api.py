@@ -6,9 +6,10 @@ from dataclasses import dataclass
 from datetime import datetime
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
-from urllib.parse import unquote, urlparse
+from urllib.parse import parse_qs, unquote, urlparse
 
 from aquapi.config import AppConfig
+from aquapi.logs import build_history_summary_payload, build_series_payload
 from aquapi.sensors import (
     ConfiguredSensorReading,
     configured_sensor_reading_to_dict,
@@ -42,7 +43,12 @@ def create_handler(state: ApiState) -> type[BaseHTTPRequestHandler]:
         server_version = "aquapi/dev"
 
         def do_GET(self) -> None:
-            response = handle_api_request(urlparse(self.path).path, state)
+            parsed = urlparse(self.path)
+            response = handle_api_request(
+                parsed.path,
+                state,
+                query={key: values[0] for key, values in parse_qs(parsed.query).items()},
+            )
             self._send_json(response.status, response.payload)
 
         def log_message(self, format: str, *args: object) -> None:
@@ -59,12 +65,24 @@ def create_handler(state: ApiState) -> type[BaseHTTPRequestHandler]:
     return AquapiRequestHandler
 
 
-def handle_api_request(path: str, state: ApiState) -> ApiResponse:
+def handle_api_request(
+    path: str,
+    state: ApiState,
+    query: dict[str, str] | None = None,
+) -> ApiResponse:
+    params = query or {}
+
     if path == "/api/health":
         return ApiResponse(
             HTTPStatus.OK,
             {"ok": True, "service": "aquapi", "version": state.version},
         )
+
+    if path == "/api/readings/series":
+        return _handle_series(state, params)
+
+    if path == "/api/readings/summary":
+        return _handle_history_summary(state, params)
 
     if path == "/api/readings":
         return ApiResponse(HTTPStatus.OK, build_readings_payload(state.readings_provider()))
@@ -95,6 +113,70 @@ def handle_api_request(path: str, state: ApiState) -> ApiResponse:
             "error": {
                 "code": "not_found",
                 "message": "not found",
+            }
+        },
+    )
+
+
+def _handle_series(state: ApiState, params: dict[str, str]) -> ApiResponse:
+    range_text = params.get("range", "24h")
+    sensor_id = params.get("sensor_id")
+    name = params.get("name")
+    if sensor_id is None and name is None:
+        return ApiResponse(
+            HTTPStatus.BAD_REQUEST,
+            {
+                "error": {
+                    "code": "missing_sensor",
+                    "message": "sensor_id or name is required",
+                }
+            },
+        )
+
+    try:
+        payload = build_series_payload(
+            state.config.logging,
+            range_text=range_text,
+            sensor_id=sensor_id,
+            name=name,
+        )
+    except ValueError as exc:
+        return _range_error(exc)
+
+    if payload is None:
+        return ApiResponse(
+            HTTPStatus.NOT_FOUND,
+            {
+                "error": {
+                    "code": "sensor_not_found",
+                    "message": "sensor history not found",
+                    "sensor_id": sensor_id,
+                    "name": name,
+                }
+            },
+        )
+
+    return ApiResponse(HTTPStatus.OK, payload)
+
+
+def _handle_history_summary(state: ApiState, params: dict[str, str]) -> ApiResponse:
+    range_text = params.get("range", "24h")
+    try:
+        return ApiResponse(
+            HTTPStatus.OK,
+            build_history_summary_payload(state.config.logging, range_text=range_text),
+        )
+    except ValueError as exc:
+        return _range_error(exc)
+
+
+def _range_error(exc: ValueError) -> ApiResponse:
+    return ApiResponse(
+        HTTPStatus.BAD_REQUEST,
+        {
+            "error": {
+                "code": "invalid_range",
+                "message": str(exc),
             }
         },
     )

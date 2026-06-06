@@ -1,9 +1,12 @@
 import json
+from pathlib import Path
+from tempfile import TemporaryDirectory
 from http import HTTPStatus
 import unittest
 
 from aquapi.api import ApiState, build_summary_payload, handle_api_request
-from aquapi.config import AppConfig
+from aquapi.config import AppConfig, LoggingConfig
+from aquapi.logs import append_readings
 from aquapi.sensors import ConfiguredSensorReading
 
 
@@ -85,11 +88,79 @@ class ApiTests(unittest.TestCase):
         self.assertEqual(response.payload["error"]["code"], "sensor_not_found")
         self.assertEqual(response.payload["error"]["sensor_id"], "28-missing")
 
+    def test_series_api_returns_history_points(self) -> None:
+        with TemporaryDirectory() as tmp_dir:
+            logging_config = make_logging_config(Path(tmp_dir))
+            append_readings(logging_config, [make_reading()])
 
-def make_state(readings: list[ConfiguredSensorReading]) -> ApiState:
+            response = handle_api_request(
+                "/api/readings/series",
+                make_state([], logging_config=logging_config),
+                query={"sensor_id": "28-00000020f5ed", "range": "24h"},
+            )
+
+        self.assertEqual(response.status, HTTPStatus.OK)
+        self.assertEqual(response.payload["sensor_id"], "28-00000020f5ed")
+        self.assertEqual(response.payload["points"][0]["status"], "ok")
+
+    def test_summary_history_api_returns_aggregates(self) -> None:
+        with TemporaryDirectory() as tmp_dir:
+            logging_config = make_logging_config(Path(tmp_dir))
+            append_readings(logging_config, [make_reading(status="low")])
+            append_readings(logging_config, [make_reading(status="ok")])
+
+            response = handle_api_request(
+                "/api/readings/summary",
+                make_state([], logging_config=logging_config),
+                query={"range": "24h"},
+            )
+
+        self.assertEqual(response.status, HTTPStatus.OK)
+        summary = response.payload["sensors"][0]
+        self.assertEqual(summary["sample_count"], 2)
+        self.assertEqual(summary["latest_status"], "ok")
+
+    def test_series_api_returns_400_for_invalid_range(self) -> None:
+        with TemporaryDirectory() as tmp_dir:
+            response = handle_api_request(
+                "/api/readings/series",
+                make_state([], logging_config=make_logging_config(Path(tmp_dir))),
+                query={"sensor_id": "28-00000020f5ed", "range": "2h"},
+            )
+
+        self.assertEqual(response.status, HTTPStatus.BAD_REQUEST)
+        self.assertEqual(response.payload["error"]["code"], "invalid_range")
+
+    def test_series_api_returns_404_for_missing_sensor_history(self) -> None:
+        with TemporaryDirectory() as tmp_dir:
+            response = handle_api_request(
+                "/api/readings/series",
+                make_state([], logging_config=make_logging_config(Path(tmp_dir))),
+                query={"sensor_id": "28-missing", "range": "24h"},
+            )
+
+        self.assertEqual(response.status, HTTPStatus.NOT_FOUND)
+        self.assertEqual(response.payload["error"]["code"], "sensor_not_found")
+
+
+def make_state(
+    readings: list[ConfiguredSensorReading],
+    *,
+    logging_config: LoggingConfig | None = None,
+) -> ApiState:
     return ApiState(
-        config=AppConfig(sensors={}),
+        config=AppConfig(sensors={}, logging=logging_config or LoggingConfig()),
         readings_provider=lambda: readings,
+    )
+
+
+def make_logging_config(data_dir: Path) -> LoggingConfig:
+    return LoggingConfig(
+        enabled=True,
+        interval_seconds=60,
+        data_dir=data_dir,
+        file_pattern="readings-%Y-%m-%d.jsonl",
+        retention_days=30,
     )
 
 

@@ -15,6 +15,13 @@ class ConfigTests(unittest.TestCase):
                     {
                         "listen_addr": "127.0.0.1",
                         "listen_port": 8081,
+                        "logging": {
+                            "enabled": True,
+                            "interval_seconds": 60,
+                            "data_dir": "/var/lib/aquapi",
+                            "file_pattern": "readings-%Y-%m-%d.jsonl",
+                            "retention_days": 30,
+                        },
                         "sensors": {
                             "28-00000020f5ed": {
                                 "name": "増田川水槽",
@@ -42,6 +49,11 @@ class ConfigTests(unittest.TestCase):
         self.assertEqual(sensor_config.max, 28.0)
         self.assertEqual(config.listen_addr, "127.0.0.1")
         self.assertEqual(config.listen_port, 8081)
+        self.assertTrue(config.logging.enabled)
+        self.assertEqual(config.logging.interval_seconds, 60)
+        self.assertEqual(config.logging.data_dir, Path("/var/lib/aquapi"))
+        self.assertEqual(config.logging.file_pattern, "readings-%Y-%m-%d.jsonl")
+        self.assertEqual(config.logging.retention_days, 30)
 
     def test_load_config_defaults_api_listen_values(self) -> None:
         with TemporaryDirectory() as tmp_dir:
@@ -68,6 +80,8 @@ class ConfigTests(unittest.TestCase):
 
         self.assertEqual(config.listen_addr, "0.0.0.0")
         self.assertEqual(config.listen_port, 8081)
+        self.assertFalse(config.logging.enabled)
+        self.assertEqual(config.logging.interval_seconds, 60)
 
     def test_load_config_rejects_missing_sensors(self) -> None:
         with TemporaryDirectory() as tmp_dir:

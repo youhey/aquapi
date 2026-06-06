@@ -1,6 +1,13 @@
 {
   "listen_addr": "0.0.0.0",
   "listen_port": 8081,
+  "logging": {
+    "enabled": true,
+    "interval_seconds": 60,
+    "data_dir": "/var/lib/aquapi",
+    "file_pattern": "readings-%Y-%m-%d.jsonl",
+    "retention_days": 30
+  },
   "sensors": {
     "28-00000020f5ed": {
       "name": "増田川水槽",
