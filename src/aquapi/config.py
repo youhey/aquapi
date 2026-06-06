@@ -19,6 +19,8 @@ class SensorConfig:
 @dataclass(frozen=True)
 class AppConfig:
     sensors: dict[str, SensorConfig]
+    listen_addr: str = "0.0.0.0"
+    listen_port: int = 8081
 
     def find_sensor(self, sensor_id: str) -> SensorConfig | None:
         return self.sensors.get(sensor_id)
@@ -49,13 +51,33 @@ def load_config(path: Path) -> AppConfig:
             max=_optional_float(raw_config, "max", sensor_id),
         )
 
-    return AppConfig(sensors=sensors)
+    return AppConfig(
+        sensors=sensors,
+        listen_addr=_optional_str(data, "listen_addr", default="0.0.0.0"),
+        listen_port=_optional_int(data, "listen_port", default=8081),
+    )
 
 
 def _required_str(data: dict[str, Any], key: str, sensor_id: str) -> str:
     value = data.get(key)
     if not isinstance(value, str) or value == "":
         raise ValueError(f"{sensor_id}: {key} は空でない文字列である必要があります")
+    return value
+
+
+def _optional_str(data: dict[str, Any], key: str, *, default: str) -> str:
+    value = data.get(key, default)
+    if not isinstance(value, str) or value == "":
+        raise ValueError(f"{key} は空でない文字列である必要があります")
+    return value
+
+
+def _optional_int(data: dict[str, Any], key: str, *, default: int) -> int:
+    value = data.get(key, default)
+    if isinstance(value, bool) or not isinstance(value, int):
+        raise ValueError(f"{key} は整数である必要があります")
+    if value < 1 or value > 65535:
+        raise ValueError(f"{key} は 1 から 65535 の範囲である必要があります")
     return value
 
 
@@ -72,4 +94,3 @@ def _optional_float(
     if isinstance(value, bool) or not isinstance(value, (int, float)):
         raise ValueError(f"{sensor_id}: {key} は数値または null である必要があります")
     return float(value)
-

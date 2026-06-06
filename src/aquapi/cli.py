@@ -5,8 +5,12 @@ import json
 import sys
 from pathlib import Path
 
+from aquapi.api import serve_api
 from aquapi.config import AppConfig, load_config
-from aquapi.sensors import ConfiguredSensorReading, read_all_configured_sensors
+from aquapi.sensors import (
+    configured_sensor_reading_to_dict,
+    read_all_configured_sensors,
+)
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -16,6 +20,11 @@ def build_parser() -> argparse.ArgumentParser:
     read_parser = subparsers.add_parser("read", help="1-Wire 温度センサーを読み取ります")
     read_parser.add_argument("--json", action="store_true", help="JSON 形式で出力します")
     read_parser.add_argument("--config", type=Path, help="センサー設定 JSON のパス")
+
+    serve_parser = subparsers.add_parser("serve", help="JSON API サーバーを起動します")
+    serve_parser.add_argument("--config", type=Path, required=True, help="センサー設定 JSON のパス")
+    serve_parser.add_argument("--host", help="待ち受けホスト")
+    serve_parser.add_argument("--port", type=int, help="待ち受けポート")
 
     return parser
 
@@ -30,7 +39,7 @@ def run_read(*, as_json: bool, config_path: Path | None) -> int:
     readings = read_all_configured_sensors(config=config)
 
     if as_json:
-        payload = {"sensors": [_reading_to_json(reading) for reading in readings]}
+        payload = {"sensors": [configured_sensor_reading_to_dict(reading) for reading in readings]}
         print(json.dumps(payload, ensure_ascii=False, indent=2))
         return 0
 
@@ -50,26 +59,30 @@ def main(argv: list[str] | None = None) -> int:
 
     if args.command == "read":
         return run_read(as_json=args.json, config_path=args.config)
+    if args.command == "serve":
+        return run_serve(config_path=args.config, host=args.host, port=args.port)
 
     raise AssertionError(f"unsupported command: {args.command}")
 
 
-def _reading_to_json(reading: ConfiguredSensorReading) -> dict[str, object]:
-    payload: dict[str, object] = {
-        "sensor_id": reading.sensor_id,
-        "name": reading.name,
-        "type": reading.type,
-        "raw_temperature_c": reading.raw_temperature_c,
-        "temperature_c": reading.temperature_c,
-        "offset": reading.offset,
-        "min": reading.min,
-        "max": reading.max,
-        "status": reading.status,
-        "crc_ok": reading.crc_ok,
-    }
-    if reading.error is not None:
-        payload["error"] = reading.error
-    return payload
+def run_serve(*, config_path: Path, host: str | None, port: int | None) -> int:
+    try:
+        config = load_config(config_path)
+    except (OSError, json.JSONDecodeError, ValueError) as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        return 1
+
+    listen_host = host if host is not None else config.listen_addr
+    listen_port = port if port is not None else config.listen_port
+    print(f"serving aquapi on {listen_host}:{listen_port}", file=sys.stderr)
+
+    try:
+        serve_api(config, host=host, port=port)
+    except OSError as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        return 1
+
+    return 0
 
 
 if __name__ == "__main__":

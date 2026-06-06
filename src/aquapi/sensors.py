@@ -39,6 +39,26 @@ class ConfiguredSensorReading:
     error: str | None = None
 
 
+def configured_sensor_reading_to_dict(
+    reading: ConfiguredSensorReading,
+) -> dict[str, object]:
+    payload: dict[str, object] = {
+        "sensor_id": reading.sensor_id,
+        "name": reading.name,
+        "type": reading.type,
+        "raw_temperature_c": reading.raw_temperature_c,
+        "temperature_c": reading.temperature_c,
+        "offset": reading.offset,
+        "min": reading.min,
+        "max": reading.max,
+        "status": reading.status,
+        "crc_ok": reading.crc_ok,
+    }
+    if reading.error is not None:
+        payload["error"] = reading.error
+    return payload
+
+
 def discover_sensor_paths(base_path: Path = DEFAULT_W1_BASE_PATH) -> list[Path]:
     return sorted(path for path in base_path.glob("28-*") if path.is_dir())
 
@@ -168,4 +188,3 @@ def _error_reading(
         raw="",
         error=str(exc),
     )
-

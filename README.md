@@ -76,6 +76,8 @@ cp configs/aquapi.example.json configs/aquapi.json
 
 ```json
 {
+  "listen_addr": "0.0.0.0",
+  "listen_port": 8081,
   "sensors": {
     "28-00000020f5ed": {
       "name": "増田川水槽",
@@ -91,6 +93,8 @@ cp configs/aquapi.example.json configs/aquapi.json
 `offset` は読み取った生温度に加算されます。例: 生温度 `24.300`、`offset: -0.2` の場合、補正後温度は `24.100 C` です。
 
 `min` 未満は `low`、`max` 超過は `high`、範囲内は `ok` です。設定にないセンサーは `unknown` として表示されます。
+
+API サーバーは `listen_addr` と `listen_port` で待ち受けます。初期ポートは `8081` です。
 
 ## CLI 実行
 
@@ -140,3 +144,35 @@ python -m aquapi.cli read --config configs/aquapi.json --json
 ```bash
 python -m unittest discover -s tests
 ```
+
+## JSON API
+
+API サーバーを起動します。
+
+```bash
+python -m aquapi.cli serve --config configs/aquapi.json
+```
+
+CLI 引数で待ち受け先を上書きできます。
+
+```bash
+python -m aquapi.cli serve --config configs/aquapi.json --host 0.0.0.0 --port 8081
+```
+
+API 一覧:
+
+- `GET /api/health`
+- `GET /api/readings`
+- `GET /api/summary`
+- `GET /api/sensors/{sensor_id}`
+
+curl 例:
+
+```bash
+curl http://aquapi.local:8081/api/health
+curl http://aquapi.local:8081/api/readings
+curl http://aquapi.local:8081/api/summary
+curl http://aquapi.local:8081/api/sensors/28-00000020f5ed
+```
+
+存在しないセンサーIDは JSON エラー付きで 404 を返します。
