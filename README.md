@@ -18,12 +18,12 @@
 - offset 補正
 - min/max しきい値による `ok` / `low` / `high` 判定
 - 未登録センサーの `unknown` 表示
+- JSON API
+- JSONL 日次ログ保存
+- systemd による API / collector の常駐
 
 未対応:
 
-- JSON API
-- ログ保存
-- daemon 化 / systemd
 - アラート
 - M5Stack 連携
 - netwatch-viewer 連携
@@ -77,7 +77,7 @@ cp configs/aquapi.example.json configs/aquapi.json
 ```json
 {
   "listen_addr": "0.0.0.0",
-  "listen_port": 8081,
+  "listen_port": 8080,
   "logging": {
     "enabled": true,
     "interval_seconds": 60,
@@ -101,7 +101,7 @@ cp configs/aquapi.example.json configs/aquapi.json
 
 `min` 未満は `low`、`max` 超過は `high`、範囲内は `ok` です。設定にないセンサーは `unknown` として表示されます。
 
-API サーバーは `listen_addr` と `listen_port` で待ち受けます。初期ポートは `8081` です。
+API サーバーは `listen_addr` と `listen_port` で待ち受けます。初期ポートは `8080` です。
 
 ログ保存は `logging` で設定します。`interval_seconds` は継続記録の間隔、`data_dir` は JSONL の保存先、`file_pattern` は日次ローテーション用のファイル名、`retention_days` は保持日数です。
 
@@ -165,7 +165,7 @@ python -m aquapi.cli serve --config configs/aquapi.json
 CLI 引数で待ち受け先を上書きできます。
 
 ```bash
-python -m aquapi.cli serve --config configs/aquapi.json --host 0.0.0.0 --port 8081
+python -m aquapi.cli serve --config configs/aquapi.json --host 0.0.0.0 --port 8080
 ```
 
 API 一覧:
@@ -180,10 +180,10 @@ API 一覧:
 curl 例:
 
 ```bash
-curl http://aquapi.local:8081/api/health
-curl http://aquapi.local:8081/api/readings
-curl http://aquapi.local:8081/api/summary
-curl http://aquapi.local:8081/api/sensors/28-00000020f5ed
+curl http://aquapi.local:8080/api/health
+curl http://aquapi.local:8080/api/readings
+curl http://aquapi.local:8080/api/summary
+curl http://aquapi.local:8080/api/sensors/28-00000020f5ed
 ```
 
 存在しないセンサーIDは JSON エラー付きで 404 を返します。
@@ -241,7 +241,79 @@ python -m aquapi.cli collect --config configs/aquapi.json
 curl 例:
 
 ```bash
-curl "http://aquapi.local:8081/api/readings/series?sensor_id=28-00000020f5ed&range=24h"
-curl "http://aquapi.local:8081/api/readings/series?name=増田川水槽&range=24h"
-curl "http://aquapi.local:8081/api/readings/summary?range=24h"
+curl "http://aquapi.local:8080/api/readings/series?sensor_id=28-00000020f5ed&range=24h"
+curl "http://aquapi.local:8080/api/readings/series?name=増田川水槽&range=24h"
+curl "http://aquapi.local:8080/api/readings/summary?range=24h"
+```
+
+## systemd
+
+Raspberry Pi 上で常駐させる場合は、API サーバーと collector を別 service として起動します。
+
+想定配置:
+
+- アプリケーション: `/opt/aquapi`
+- 設定ファイル: `/etc/aquapi/aquapi.json`
+- ログ保存先: `/var/lib/aquapi`
+- 実行ユーザー: `aquapi`
+
+初回配置:
+
+```bash
+sudo useradd --system --home /var/lib/aquapi --shell /usr/sbin/nologin aquapi
+sudo mkdir -p /opt/aquapi /etc/aquapi /var/lib/aquapi
+sudo chown -R "$USER:$USER" /opt/aquapi
+sudo chown -R aquapi:aquapi /etc/aquapi /var/lib/aquapi
+
+git clone ssh://git@github.com/youhey/aquapi.git /opt/aquapi
+cd /opt/aquapi
+python3 -m venv .venv
+.venv/bin/python -m pip install -e .
+
+sudo cp configs/aquapi.example.json /etc/aquapi/aquapi.json
+sudo chown aquapi:aquapi /etc/aquapi/aquapi.json
+sudo nano /etc/aquapi/aquapi.json
+```
+
+unit をインストールします。
+
+```bash
+sudo cp deploy/systemd/aquapi-api.service /etc/systemd/system/
+sudo cp deploy/systemd/aquapi-collect.service /etc/systemd/system/
+sudo systemctl daemon-reload
+```
+
+起動前に手動確認します。
+
+```bash
+sudo -u aquapi /opt/aquapi/.venv/bin/python -m aquapi.cli read --config /etc/aquapi/aquapi.json
+sudo -u aquapi /opt/aquapi/.venv/bin/python -m aquapi.cli log-once --config /etc/aquapi/aquapi.json
+```
+
+service を起動します。
+
+```bash
+sudo systemctl enable --now aquapi-api.service
+sudo systemctl enable --now aquapi-collect.service
+```
+
+状態確認:
+
+```bash
+systemctl status aquapi-api.service
+systemctl status aquapi-collect.service
+journalctl -u aquapi-api.service -n 100 --no-pager
+journalctl -u aquapi-collect.service -n 100 --no-pager
+curl http://localhost:8080/api/health
+```
+
+更新時は service を停止してから pull / install し、設定を確認して再起動します。
+
+```bash
+sudo systemctl stop aquapi-api.service aquapi-collect.service
+cd /opt/aquapi
+git pull
+.venv/bin/python -m pip install -e .
+sudo systemctl daemon-reload
+sudo systemctl restart aquapi-api.service aquapi-collect.service
 ```

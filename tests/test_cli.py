@@ -67,7 +67,7 @@ class CliTests(unittest.TestCase):
                 json.dumps(
                     {
                         "listen_addr": "0.0.0.0",
-                        "listen_port": 8081,
+                        "listen_port": 8080,
                         "sensors": {
                             "28-00000020f5ed": {
                                 "name": "増田川水槽",

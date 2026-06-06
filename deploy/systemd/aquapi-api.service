@@ -1,0 +1,19 @@
+[Unit]
+Description=aquapi JSON API server
+Documentation=https://github.com/youhey/aquapi
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=aquapi
+Group=aquapi
+WorkingDirectory=/opt/aquapi
+Environment=AQUAPI_CONFIG=/etc/aquapi/aquapi.json
+ExecStart=/opt/aquapi/.venv/bin/python -m aquapi.cli serve --config ${AQUAPI_CONFIG}
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target
+

@@ -14,7 +14,7 @@ class ConfigTests(unittest.TestCase):
                 json.dumps(
                     {
                         "listen_addr": "127.0.0.1",
-                        "listen_port": 8081,
+                        "listen_port": 8080,
                         "logging": {
                             "enabled": True,
                             "interval_seconds": 60,
@@ -48,7 +48,7 @@ class ConfigTests(unittest.TestCase):
         self.assertEqual(sensor_config.min, 18.0)
         self.assertEqual(sensor_config.max, 28.0)
         self.assertEqual(config.listen_addr, "127.0.0.1")
-        self.assertEqual(config.listen_port, 8081)
+        self.assertEqual(config.listen_port, 8080)
         self.assertTrue(config.logging.enabled)
         self.assertEqual(config.logging.interval_seconds, 60)
         self.assertEqual(config.logging.data_dir, Path("/var/lib/aquapi"))
@@ -79,7 +79,7 @@ class ConfigTests(unittest.TestCase):
             config = load_config(config_path)
 
         self.assertEqual(config.listen_addr, "0.0.0.0")
-        self.assertEqual(config.listen_port, 8081)
+        self.assertEqual(config.listen_port, 8080)
         self.assertFalse(config.logging.enabled)
         self.assertEqual(config.logging.interval_seconds, 60)
 

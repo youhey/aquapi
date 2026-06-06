@@ -29,7 +29,7 @@ class LoggingConfig:
 class AppConfig:
     sensors: dict[str, SensorConfig]
     listen_addr: str = "0.0.0.0"
-    listen_port: int = 8081
+    listen_port: int = 8080
     logging: LoggingConfig = LoggingConfig()
 
     def find_sensor(self, sensor_id: str) -> SensorConfig | None:
@@ -64,7 +64,7 @@ def load_config(path: Path) -> AppConfig:
     return AppConfig(
         sensors=sensors,
         listen_addr=_optional_str(data, "listen_addr", default="0.0.0.0"),
-        listen_port=_optional_int(data, "listen_port", default=8081),
+        listen_port=_optional_int(data, "listen_port", default=8080),
         logging=_load_logging_config(data.get("logging")),
     )
 

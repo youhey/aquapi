@@ -1,6 +1,6 @@
 {
   "listen_addr": "0.0.0.0",
-  "listen_port": 8081,
+  "listen_port": 8080,
   "logging": {
     "enabled": true,
     "interval_seconds": 60,
