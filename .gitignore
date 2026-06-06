@@ -1,0 +1,19 @@
+# local config
+configs/aquapi.json
+.env
+
+# runtime data
+data/
+*.sqlite
+*.sqlite3
+*.db
+*.log
+*.jsonl
+
+# Python
+.venv/
+__pycache__/
+*.pyc
+
+# macOS
+.DS_Store
