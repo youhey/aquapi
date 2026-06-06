@@ -19,7 +19,7 @@
 - min/max しきい値による `ok` / `low` / `high` 判定
 - 未登録センサーの `unknown` 表示
 - JSON API
-- JSONL 日次ログ保存
+- SQLite ログ保存
 - systemd による API / collector の常駐
 
 未対応:
@@ -81,9 +81,9 @@ cp configs/aquapi.example.json configs/aquapi.json
   "logging": {
     "enabled": true,
     "interval_seconds": 60,
-    "data_dir": "/var/lib/aquapi",
-    "file_pattern": "readings-%Y-%m-%d.jsonl",
-    "retention_days": 30
+    "storage": "sqlite",
+    "database_path": "/var/lib/aquapi/aquapi.sqlite3",
+    "retention_days": 365
   },
   "sensors": {
     "28-00000020f5ed": {
@@ -103,7 +103,7 @@ cp configs/aquapi.example.json configs/aquapi.json
 
 API サーバーは `listen_addr` と `listen_port` で待ち受けます。初期ポートは `8080` です。
 
-ログ保存は `logging` で設定します。`interval_seconds` は継続記録の間隔、`data_dir` は JSONL の保存先、`file_pattern` は日次ローテーション用のファイル名、`retention_days` は保持日数です。
+ログ保存は `logging` で設定します。標準の保存方式は SQLite です。`interval_seconds` は継続記録の間隔、`database_path` は SQLite DB ファイル、`retention_days` は保持日数です。`retention_days <= 0` の場合、古い readings は削除しません。
 
 ## CLI 実行
 
@@ -190,10 +190,28 @@ curl http://aquapi.local:8080/api/sensors/28-00000020f5ed
 
 ## ログ保存
 
-現在値を1回だけ JSONL に保存します。
+DB を初期化し、設定ファイル上のセンサー定義を同期します。
+
+```bash
+python -m aquapi.cli db-init --config configs/aquapi.json
+```
+
+現在値を1回だけ SQLite に保存します。
 
 ```bash
 python -m aquapi.cli log-once --config configs/aquapi.json
+```
+
+出力例:
+
+```text
+Saved 5 readings to /var/lib/aquapi/aquapi.sqlite3
+```
+
+DB の保存状況を確認します。
+
+```bash
+python -m aquapi.cli db-stats --config configs/aquapi.json
 ```
 
 指定間隔で継続的に保存します。
@@ -202,27 +220,26 @@ python -m aquapi.cli log-once --config configs/aquapi.json
 python -m aquapi.cli collect --config configs/aquapi.json
 ```
 
-保存形式は1行1測定時点の JSONL です。`file_pattern` の初期値では、日付ごとに `readings-YYYY-MM-DD.jsonl` が作成されます。
+SQLite には `sensors`、`readings`、`metadata` テーブルを作成します。温度は `23.187 C` を `23187` のようにミリ℃の整数として保存します。60秒間隔、5センサー、1年保存でも約 2,628,000 readings なので SQLite で現実的に扱えます。
+
+DB ファイルは Git 管理しません。`*.sqlite`、`*.sqlite3`、`*.db`、`data/` は `.gitignore` に含まれています。
+
+`retention_days` より古い readings は、保存時または DB 初期化時に削除されます。`sensors` table は削除しません。
+
+JSONL 互換が必要な場合は、明示的に `storage: "jsonl"` を指定してください。
 
 ```json
 {
-  "ts": "2026-06-06T12:00:00+09:00",
-  "sensors": [
-    {
-      "sensor_id": "28-00000020f5ed",
-      "name": "増田川水槽",
-      "type": "water",
-      "raw_temperature_c": 23.187,
-      "temperature_c": 23.187,
-      "offset": 0.0,
-      "status": "ok",
-      "crc_ok": true
-    }
-  ]
+  "logging": {
+    "enabled": true,
+    "interval_seconds": 60,
+    "storage": "jsonl",
+    "data_dir": "/var/lib/aquapi",
+    "file_pattern": "readings-%Y-%m-%d.jsonl",
+    "retention_days": 30
+  }
 }
 ```
-
-`retention_days` より古い日次ログは、起動時または保存時に削除されます。
 
 履歴 API:
 
@@ -237,6 +254,8 @@ python -m aquapi.cli collect --config configs/aquapi.json
 - `24h`
 - `7d`
 - `30d`
+- `365d`
+- `1y`
 
 curl 例:
 
@@ -287,7 +306,9 @@ sudo systemctl daemon-reload
 
 ```bash
 sudo -u aquapi /opt/aquapi/.venv/bin/python -m aquapi.cli read --config /etc/aquapi/aquapi.json
+sudo -u aquapi /opt/aquapi/.venv/bin/python -m aquapi.cli db-init --config /etc/aquapi/aquapi.json
 sudo -u aquapi /opt/aquapi/.venv/bin/python -m aquapi.cli log-once --config /etc/aquapi/aquapi.json
+sudo -u aquapi /opt/aquapi/.venv/bin/python -m aquapi.cli db-stats --config /etc/aquapi/aquapi.json
 ```
 
 service を起動します。

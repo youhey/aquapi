@@ -1,4 +1,5 @@
 import json
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from tempfile import TemporaryDirectory
 from http import HTTPStatus
@@ -6,7 +7,7 @@ import unittest
 
 from aquapi.api import ApiState, build_summary_payload, handle_api_request
 from aquapi.config import AppConfig, LoggingConfig
-from aquapi.logs import append_readings
+from aquapi.logs import write_readings
 from aquapi.sensors import ConfiguredSensorReading
 
 
@@ -91,7 +92,7 @@ class ApiTests(unittest.TestCase):
     def test_series_api_returns_history_points(self) -> None:
         with TemporaryDirectory() as tmp_dir:
             logging_config = make_logging_config(Path(tmp_dir))
-            append_readings(logging_config, [make_reading()])
+            write_readings(AppConfig(sensors={}, logging=logging_config), [make_reading()])
 
             response = handle_api_request(
                 "/api/readings/series",
@@ -106,8 +107,10 @@ class ApiTests(unittest.TestCase):
     def test_summary_history_api_returns_aggregates(self) -> None:
         with TemporaryDirectory() as tmp_dir:
             logging_config = make_logging_config(Path(tmp_dir))
-            append_readings(logging_config, [make_reading(status="low")])
-            append_readings(logging_config, [make_reading(status="ok")])
+            config = AppConfig(sensors={}, logging=logging_config)
+            now = datetime.now(timezone.utc)
+            write_readings(config, [make_reading(status="low")], now=now - timedelta(seconds=1))
+            write_readings(config, [make_reading(status="ok")], now=now)
 
             response = handle_api_request(
                 "/api/readings/summary",
@@ -158,9 +161,9 @@ def make_logging_config(data_dir: Path) -> LoggingConfig:
     return LoggingConfig(
         enabled=True,
         interval_seconds=60,
-        data_dir=data_dir,
-        file_pattern="readings-%Y-%m-%d.jsonl",
-        retention_days=30,
+        storage="sqlite",
+        database_path=data_dir / "aquapi.sqlite3",
+        retention_days=365,
     )
 
 

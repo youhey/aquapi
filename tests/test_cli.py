@@ -116,9 +116,9 @@ class CliTests(unittest.TestCase):
                         "logging": {
                             "enabled": True,
                             "interval_seconds": 60,
-                            "data_dir": str(data_dir),
-                            "file_pattern": "readings-%Y-%m-%d.jsonl",
-                            "retention_days": 30,
+                            "storage": "sqlite",
+                            "database_path": str(data_dir / "aquapi.sqlite3"),
+                            "retention_days": 365,
                         },
                         "sensors": {},
                     },
@@ -132,12 +132,13 @@ class CliTests(unittest.TestCase):
                 patch("sys.stdout", new_callable=StringIO) as stdout,
             ):
                 log_once.return_value.path = data_dir / "readings-2026-06-06.jsonl"
+                log_once.return_value.entry = {"saved_count": 5}
 
                 exit_code = main(["log-once", "--config", str(config_path)])
 
         self.assertEqual(exit_code, 0)
         log_once.assert_called_once()
-        self.assertIn("readings-2026-06-06.jsonl", stdout.getvalue())
+        self.assertIn("Saved 5 readings", stdout.getvalue())
 
     def test_collect_command_calls_collector(self) -> None:
         with TemporaryDirectory() as tmp_dir:
@@ -149,9 +150,9 @@ class CliTests(unittest.TestCase):
                         "logging": {
                             "enabled": True,
                             "interval_seconds": 60,
-                            "data_dir": str(tmp_path / "data"),
-                            "file_pattern": "readings-%Y-%m-%d.jsonl",
-                            "retention_days": 30,
+                            "storage": "sqlite",
+                            "database_path": str(tmp_path / "data/aquapi.sqlite3"),
+                            "retention_days": 365,
                         },
                         "sensors": {},
                     },
@@ -165,6 +166,51 @@ class CliTests(unittest.TestCase):
 
         self.assertEqual(exit_code, 0)
         collect_forever.assert_called_once()
+
+    def test_db_init_command_initializes_storage(self) -> None:
+        with TemporaryDirectory() as tmp_dir:
+            config_path = write_sqlite_config(Path(tmp_dir))
+
+            with (
+                patch("aquapi.cli.initialize_storage") as initialize_storage,
+                patch("sys.stdout", new_callable=StringIO) as stdout,
+            ):
+                exit_code = main(["db-init", "--config", str(config_path)])
+
+        self.assertEqual(exit_code, 0)
+        initialize_storage.assert_called_once()
+        self.assertIn("Initialized", stdout.getvalue())
+
+    def test_db_stats_command_prints_counts(self) -> None:
+        with TemporaryDirectory() as tmp_dir:
+            config_path = write_sqlite_config(Path(tmp_dir))
+
+            with patch("sys.stdout", new_callable=StringIO) as stdout:
+                exit_code = main(["db-stats", "--config", str(config_path)])
+
+        self.assertEqual(exit_code, 0)
+        self.assertIn("Database:", stdout.getvalue())
+        self.assertIn("Readings:", stdout.getvalue())
+
+def write_sqlite_config(tmp_path: Path) -> Path:
+    config_path = tmp_path / "aquapi.json"
+    config_path.write_text(
+        json.dumps(
+            {
+                "logging": {
+                    "enabled": True,
+                    "interval_seconds": 60,
+                    "storage": "sqlite",
+                    "database_path": str(tmp_path / "aquapi.sqlite3"),
+                    "retention_days": 365,
+                },
+                "sensors": {},
+            },
+            ensure_ascii=False,
+        ),
+        encoding="utf-8",
+    )
+    return config_path
 
 
 if __name__ == "__main__":

@@ -176,6 +176,7 @@ def make_logging_config(
     return LoggingConfig(
         enabled=True,
         interval_seconds=60,
+        storage="jsonl",
         data_dir=data_dir,
         file_pattern="readings-%Y-%m-%d.jsonl",
         retention_days=retention_days,
@@ -184,4 +185,3 @@ def make_logging_config(
 
 if __name__ == "__main__":
     unittest.main()
-

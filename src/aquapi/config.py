@@ -20,9 +20,11 @@ class SensorConfig:
 class LoggingConfig:
     enabled: bool = False
     interval_seconds: int = 60
+    storage: str = "sqlite"
+    database_path: Path = Path("data/aquapi.sqlite3")
     data_dir: Path = Path("data")
     file_pattern: str = "readings-%Y-%m-%d.jsonl"
-    retention_days: int = 30
+    retention_days: int = 365
 
 
 @dataclass(frozen=True)
@@ -78,9 +80,11 @@ def _load_logging_config(data: Any) -> LoggingConfig:
     return LoggingConfig(
         enabled=_optional_bool(data, "enabled", default=False),
         interval_seconds=_optional_int(data, "interval_seconds", default=60),
+        storage=_optional_storage(data, "storage", default="sqlite"),
+        database_path=Path(_optional_str(data, "database_path", default="data/aquapi.sqlite3")),
         data_dir=Path(_optional_str(data, "data_dir", default="data")),
         file_pattern=_optional_str(data, "file_pattern", default="readings-%Y-%m-%d.jsonl"),
-        retention_days=_optional_int(data, "retention_days", default=30),
+        retention_days=_optional_retention_days(data, "retention_days", default=365),
     )
 
 
@@ -104,6 +108,20 @@ def _optional_int(data: dict[str, Any], key: str, *, default: int) -> int:
         raise ValueError(f"{key} は整数である必要があります")
     if value < 1 or value > 65535:
         raise ValueError(f"{key} は 1 から 65535 の範囲である必要があります")
+    return value
+
+
+def _optional_retention_days(data: dict[str, Any], key: str, *, default: int) -> int:
+    value = data.get(key, default)
+    if isinstance(value, bool) or not isinstance(value, int):
+        raise ValueError(f"{key} は整数である必要があります")
+    return value
+
+
+def _optional_storage(data: dict[str, Any], key: str, *, default: str) -> str:
+    value = _optional_str(data, key, default=default)
+    if value not in {"sqlite", "jsonl"}:
+        raise ValueError(f"{key} は sqlite または jsonl である必要があります")
     return value
 
 

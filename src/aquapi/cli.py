@@ -2,12 +2,14 @@ from __future__ import annotations
 
 import argparse
 import json
+import sqlite3
 import sys
 from pathlib import Path
 
 from aquapi.api import serve_api
 from aquapi.config import AppConfig, load_config
-from aquapi.logs import collect_forever, log_once
+from aquapi.logs import collect_forever, initialize_storage, log_once
+from aquapi.sqlite_storage import SQLiteStorage
 from aquapi.sensors import (
     configured_sensor_reading_to_dict,
     read_all_configured_sensors,
@@ -32,6 +34,12 @@ def build_parser() -> argparse.ArgumentParser:
 
     collect_parser = subparsers.add_parser("collect", help="指定間隔でセンサー値を保存し続けます")
     collect_parser.add_argument("--config", type=Path, required=True, help="センサー設定 JSON のパス")
+
+    db_init_parser = subparsers.add_parser("db-init", help="SQLite DB を初期化します")
+    db_init_parser.add_argument("--config", type=Path, required=True, help="センサー設定 JSON のパス")
+
+    db_stats_parser = subparsers.add_parser("db-stats", help="SQLite DB の保存状況を表示します")
+    db_stats_parser.add_argument("--config", type=Path, required=True, help="センサー設定 JSON のパス")
 
     return parser
 
@@ -72,6 +80,10 @@ def main(argv: list[str] | None = None) -> int:
         return run_log_once(config_path=args.config)
     if args.command == "collect":
         return run_collect(config_path=args.config)
+    if args.command == "db-init":
+        return run_db_init(config_path=args.config)
+    if args.command == "db-stats":
+        return run_db_stats(config_path=args.config)
 
     raise AssertionError(f"unsupported command: {args.command}")
 
@@ -89,7 +101,7 @@ def run_serve(*, config_path: Path, host: str | None, port: int | None) -> int:
 
     try:
         serve_api(config, host=host, port=port)
-    except OSError as exc:
+    except (OSError, sqlite3.Error) as exc:
         print(f"error: {exc}", file=sys.stderr)
         return 1
 
@@ -103,11 +115,13 @@ def run_log_once(*, config_path: Path) -> int:
 
     try:
         result = log_once(config)
-    except OSError as exc:
+    except (OSError, sqlite3.Error) as exc:
         print(f"error: {exc}", file=sys.stderr)
         return 1
 
-    print(str(result.path))
+    sensors = result.entry.get("sensors")
+    saved_count = len(sensors) if isinstance(sensors, list) else result.entry.get("saved_count", 0)
+    print(f"Saved {saved_count} readings to {result.path}")
     return 0
 
 
@@ -127,11 +141,48 @@ def run_collect(*, config_path: Path) -> int:
     return 0
 
 
-def _load_config_for_logging(config_path: Path) -> AppConfig | None:
+def run_db_init(*, config_path: Path) -> int:
+    config = _load_config(config_path)
+    if config is None:
+        return 1
+    if config.logging.storage != "sqlite":
+        print("error: db-init requires logging.storage sqlite", file=sys.stderr)
+        return 1
+
     try:
-        config = load_config(config_path)
-    except (OSError, json.JSONDecodeError, ValueError) as exc:
+        initialize_storage(config)
+    except OSError as exc:
         print(f"error: {exc}", file=sys.stderr)
+        return 1
+
+    print(f"Initialized {config.logging.database_path}")
+    return 0
+
+
+def run_db_stats(*, config_path: Path) -> int:
+    config = _load_config(config_path)
+    if config is None:
+        return 1
+    if config.logging.storage != "sqlite":
+        print("error: db-stats requires logging.storage sqlite", file=sys.stderr)
+        return 1
+
+    try:
+        stats = SQLiteStorage(config.logging.database_path).stats()
+    except sqlite3.Error as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        return 1
+    print(f"Database: {stats.path}")
+    print(f"Readings: {stats.readings_count}")
+    print(f"First: {_format_ts(stats.first_ts)}")
+    print(f"Last:  {_format_ts(stats.last_ts)}")
+    print(f"Sensors: {stats.sensors_count}")
+    return 0
+
+
+def _load_config_for_logging(config_path: Path) -> AppConfig | None:
+    config = _load_config(config_path)
+    if config is None:
         return None
 
     if not config.logging.enabled:
@@ -139,6 +190,24 @@ def _load_config_for_logging(config_path: Path) -> AppConfig | None:
         return None
 
     return config
+
+
+def _load_config(config_path: Path) -> AppConfig | None:
+    try:
+        config = load_config(config_path)
+    except (OSError, json.JSONDecodeError, ValueError) as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        return None
+
+    return config
+
+
+def _format_ts(ts: int | None) -> str:
+    if ts is None:
+        return "-"
+    from datetime import datetime
+
+    return datetime.fromtimestamp(ts).astimezone().isoformat(timespec="seconds")
 
 
 if __name__ == "__main__":

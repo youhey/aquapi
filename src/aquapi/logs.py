@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import json
 import re
+import sqlite3
+import sys
 import time
 from dataclasses import dataclass
 from datetime import date, datetime, timedelta
@@ -10,6 +12,7 @@ from typing import Iterator
 
 from aquapi.config import AppConfig, LoggingConfig
 from aquapi.sensors import ConfiguredSensorReading, read_all_configured_sensors
+from aquapi.sqlite_storage import SQLiteStorage
 
 
 RANGE_DELTAS = {
@@ -18,6 +21,8 @@ RANGE_DELTAS = {
     "24h": timedelta(hours=24),
     "7d": timedelta(days=7),
     "30d": timedelta(days=30),
+    "365d": timedelta(days=365),
+    "1y": timedelta(days=365),
 }
 
 
@@ -35,13 +40,46 @@ def log_once(
 ) -> LogWriteResult:
     timestamp = now or _now()
     current_readings = readings if readings is not None else read_all_configured_sensors(config=config)
-    return append_readings(config.logging, current_readings, now=timestamp)
+    return write_readings(config, current_readings, now=timestamp)
 
 
 def collect_forever(config: AppConfig) -> None:
     while True:
-        log_once(config)
+        try:
+            log_once(config)
+        except (OSError, sqlite3.Error) as exc:
+            print(f"error: {exc}", file=sys.stderr)
         time.sleep(config.logging.interval_seconds)
+
+
+def write_readings(
+    config: AppConfig,
+    readings: list[ConfiguredSensorReading],
+    *,
+    now: datetime | None = None,
+) -> LogWriteResult:
+    if config.logging.storage == "jsonl":
+        return append_readings(config.logging, readings, now=now)
+
+    timestamp = now or _now()
+    storage = SQLiteStorage(config.logging.database_path)
+    storage.initialize()
+    storage.sync_sensors(config)
+    result = storage.insert_readings(readings, timestamp)
+    storage.apply_retention(config.logging.retention_days, now=timestamp)
+    return LogWriteResult(path=result.path, entry={"saved_count": result.saved_count})
+
+
+def initialize_storage(config: AppConfig) -> None:
+    if config.logging.storage == "jsonl":
+        config.logging.data_dir.mkdir(parents=True, exist_ok=True)
+        cleanup_old_logs(config.logging)
+        return
+
+    storage = SQLiteStorage(config.logging.database_path)
+    storage.initialize()
+    storage.sync_sensors(config)
+    storage.apply_retention(config.logging.retention_days)
 
 
 def append_readings(
@@ -78,6 +116,8 @@ def log_file_path(logging_config: LoggingConfig, timestamp: datetime) -> Path:
 
 
 def cleanup_old_logs(logging_config: LoggingConfig, *, today: date | None = None) -> None:
+    if logging_config.retention_days <= 0:
+        return
     if not logging_config.data_dir.exists():
         return
 
@@ -107,6 +147,17 @@ def build_series_payload(
     name: str | None = None,
     now: datetime | None = None,
 ) -> dict[str, object] | None:
+    if logging_config.storage == "sqlite":
+        end = now or _now()
+        start = _range_start(range_text, now=end)
+        return SQLiteStorage(logging_config.database_path).get_series(
+            range_text=range_text,
+            start=start,
+            end=end,
+            sensor_id=sensor_id,
+            name=name,
+        )
+
     since = _range_start(range_text, now=now)
     points: list[dict[str, object]] = []
     resolved_sensor_id: str | None = None
@@ -153,6 +204,15 @@ def build_history_summary_payload(
     range_text: str,
     now: datetime | None = None,
 ) -> dict[str, object]:
+    if logging_config.storage == "sqlite":
+        end = now or _now()
+        start = _range_start(range_text, now=end)
+        return SQLiteStorage(logging_config.database_path).get_summary(
+            range_text=range_text,
+            start=start,
+            end=end,
+        )
+
     since = _range_start(range_text, now=now)
     by_sensor: dict[str, dict[str, object]] = {}
 
@@ -275,4 +335,3 @@ def _file_pattern_regex(file_pattern: str) -> re.Pattern[str]:
 
 def _now() -> datetime:
     return datetime.now().astimezone()
-

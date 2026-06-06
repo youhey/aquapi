@@ -18,9 +18,9 @@ class ConfigTests(unittest.TestCase):
                         "logging": {
                             "enabled": True,
                             "interval_seconds": 60,
-                            "data_dir": "/var/lib/aquapi",
-                            "file_pattern": "readings-%Y-%m-%d.jsonl",
-                            "retention_days": 30,
+                            "storage": "sqlite",
+                            "database_path": "/var/lib/aquapi/aquapi.sqlite3",
+                            "retention_days": 365,
                         },
                         "sensors": {
                             "28-00000020f5ed": {
@@ -51,9 +51,9 @@ class ConfigTests(unittest.TestCase):
         self.assertEqual(config.listen_port, 8080)
         self.assertTrue(config.logging.enabled)
         self.assertEqual(config.logging.interval_seconds, 60)
-        self.assertEqual(config.logging.data_dir, Path("/var/lib/aquapi"))
-        self.assertEqual(config.logging.file_pattern, "readings-%Y-%m-%d.jsonl")
-        self.assertEqual(config.logging.retention_days, 30)
+        self.assertEqual(config.logging.storage, "sqlite")
+        self.assertEqual(config.logging.database_path, Path("/var/lib/aquapi/aquapi.sqlite3"))
+        self.assertEqual(config.logging.retention_days, 365)
 
     def test_load_config_defaults_api_listen_values(self) -> None:
         with TemporaryDirectory() as tmp_dir:
@@ -82,6 +82,34 @@ class ConfigTests(unittest.TestCase):
         self.assertEqual(config.listen_port, 8080)
         self.assertFalse(config.logging.enabled)
         self.assertEqual(config.logging.interval_seconds, 60)
+        self.assertEqual(config.logging.storage, "sqlite")
+        self.assertEqual(config.logging.database_path, Path("data/aquapi.sqlite3"))
+        self.assertEqual(config.logging.retention_days, 365)
+
+    def test_load_config_can_select_jsonl_storage(self) -> None:
+        with TemporaryDirectory() as tmp_dir:
+            config_path = Path(tmp_dir) / "aquapi.json"
+            config_path.write_text(
+                json.dumps(
+                    {
+                        "logging": {
+                            "enabled": True,
+                            "storage": "jsonl",
+                            "data_dir": str(Path(tmp_dir) / "data"),
+                            "file_pattern": "readings-%Y-%m-%d.jsonl",
+                            "retention_days": 30,
+                        },
+                        "sensors": {},
+                    },
+                    ensure_ascii=False,
+                ),
+                encoding="utf-8",
+            )
+
+            config = load_config(config_path)
+
+        self.assertEqual(config.logging.storage, "jsonl")
+        self.assertEqual(config.logging.retention_days, 30)
 
     def test_load_config_rejects_missing_sensors(self) -> None:
         with TemporaryDirectory() as tmp_dir:
