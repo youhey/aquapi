@@ -8,6 +8,16 @@
     "database_path": "/var/lib/aquapi/aquapi.sqlite3",
     "retention_days": 365
   },
+  "weather": {
+    "enabled": true,
+    "source": "open-meteo",
+    "latitude": 35.681236,
+    "longitude": 139.767125,
+    "timezone": "Asia/Tokyo",
+    "interval_seconds": 3600,
+    "forecast_days": 2,
+    "retention_days": 365
+  },
   "sensors": {
     "28-00000020f5ed": {
       "name": "増田川水槽",

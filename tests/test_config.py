@@ -22,6 +22,16 @@ class ConfigTests(unittest.TestCase):
                             "database_path": "/var/lib/aquapi/aquapi.sqlite3",
                             "retention_days": 365,
                         },
+                        "weather": {
+                            "enabled": True,
+                            "source": "open-meteo",
+                            "latitude": 35.681236,
+                            "longitude": 139.767125,
+                            "timezone": "Asia/Tokyo",
+                            "interval_seconds": 3600,
+                            "forecast_days": 2,
+                            "retention_days": 365,
+                        },
                         "sensors": {
                             "28-00000020f5ed": {
                                 "name": "増田川水槽",
@@ -54,6 +64,14 @@ class ConfigTests(unittest.TestCase):
         self.assertEqual(config.logging.storage, "sqlite")
         self.assertEqual(config.logging.database_path, Path("/var/lib/aquapi/aquapi.sqlite3"))
         self.assertEqual(config.logging.retention_days, 365)
+        self.assertTrue(config.weather.enabled)
+        self.assertEqual(config.weather.source, "open-meteo")
+        self.assertEqual(config.weather.latitude, 35.681236)
+        self.assertEqual(config.weather.longitude, 139.767125)
+        self.assertEqual(config.weather.timezone, "Asia/Tokyo")
+        self.assertEqual(config.weather.interval_seconds, 3600)
+        self.assertEqual(config.weather.forecast_days, 2)
+        self.assertEqual(config.weather.retention_days, 365)
 
     def test_load_config_defaults_api_listen_values(self) -> None:
         with TemporaryDirectory() as tmp_dir:
@@ -85,6 +103,8 @@ class ConfigTests(unittest.TestCase):
         self.assertEqual(config.logging.storage, "sqlite")
         self.assertEqual(config.logging.database_path, Path("data/aquapi.sqlite3"))
         self.assertEqual(config.logging.retention_days, 365)
+        self.assertFalse(config.weather.enabled)
+        self.assertEqual(config.weather.source, "open-meteo")
 
     def test_load_config_can_select_jsonl_storage(self) -> None:
         with TemporaryDirectory() as tmp_dir:

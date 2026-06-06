@@ -28,11 +28,24 @@ class LoggingConfig:
 
 
 @dataclass(frozen=True)
+class WeatherConfig:
+    enabled: bool = False
+    source: str = "open-meteo"
+    latitude: float = 35.681236
+    longitude: float = 139.767125
+    timezone: str = "Asia/Tokyo"
+    interval_seconds: int = 3600
+    forecast_days: int = 2
+    retention_days: int = 365
+
+
+@dataclass(frozen=True)
 class AppConfig:
     sensors: dict[str, SensorConfig]
     listen_addr: str = "0.0.0.0"
     listen_port: int = 8080
     logging: LoggingConfig = LoggingConfig()
+    weather: WeatherConfig = WeatherConfig()
 
     def find_sensor(self, sensor_id: str) -> SensorConfig | None:
         return self.sensors.get(sensor_id)
@@ -68,6 +81,7 @@ def load_config(path: Path) -> AppConfig:
         listen_addr=_optional_str(data, "listen_addr", default="0.0.0.0"),
         listen_port=_optional_int(data, "listen_port", default=8080),
         logging=_load_logging_config(data.get("logging")),
+        weather=_load_weather_config(data.get("weather")),
     )
 
 
@@ -84,6 +98,24 @@ def _load_logging_config(data: Any) -> LoggingConfig:
         database_path=Path(_optional_str(data, "database_path", default="data/aquapi.sqlite3")),
         data_dir=Path(_optional_str(data, "data_dir", default="data")),
         file_pattern=_optional_str(data, "file_pattern", default="readings-%Y-%m-%d.jsonl"),
+        retention_days=_optional_retention_days(data, "retention_days", default=365),
+    )
+
+
+def _load_weather_config(data: Any) -> WeatherConfig:
+    if data is None:
+        return WeatherConfig()
+    if not isinstance(data, dict):
+        raise ValueError("weather は object である必要があります")
+
+    return WeatherConfig(
+        enabled=_optional_bool(data, "enabled", default=False),
+        source=_optional_weather_source(data, "source", default="open-meteo"),
+        latitude=_optional_number(data, "latitude", default=35.681236),
+        longitude=_optional_number(data, "longitude", default=139.767125),
+        timezone=_optional_str(data, "timezone", default="Asia/Tokyo"),
+        interval_seconds=_optional_int(data, "interval_seconds", default=3600),
+        forecast_days=_optional_int(data, "forecast_days", default=2),
         retention_days=_optional_retention_days(data, "retention_days", default=365),
     )
 
@@ -123,6 +155,20 @@ def _optional_storage(data: dict[str, Any], key: str, *, default: str) -> str:
     if value not in {"sqlite", "jsonl"}:
         raise ValueError(f"{key} は sqlite または jsonl である必要があります")
     return value
+
+
+def _optional_weather_source(data: dict[str, Any], key: str, *, default: str) -> str:
+    value = _optional_str(data, key, default=default)
+    if value != "open-meteo":
+        raise ValueError(f"{key} は open-meteo である必要があります")
+    return value
+
+
+def _optional_number(data: dict[str, Any], key: str, *, default: float) -> float:
+    value = data.get(key, default)
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        raise ValueError(f"{key} は数値である必要があります")
+    return float(value)
 
 
 def _optional_bool(data: dict[str, Any], key: str, *, default: bool) -> bool:

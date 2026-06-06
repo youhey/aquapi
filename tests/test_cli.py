@@ -192,7 +192,44 @@ class CliTests(unittest.TestCase):
         self.assertIn("Database:", stdout.getvalue())
         self.assertIn("Readings:", stdout.getvalue())
 
-def write_sqlite_config(tmp_path: Path) -> Path:
+    def test_fetch_weather_once_command_saves_weather(self) -> None:
+        with TemporaryDirectory() as tmp_dir:
+            config_path = write_sqlite_config(Path(tmp_dir), weather_enabled=True)
+
+            with (
+                patch("aquapi.cli.fetch_weather_once") as fetch_weather_once,
+                patch("sys.stdout", new_callable=StringIO) as stdout,
+            ):
+                fetch_weather_once.return_value.saved_count = 48
+                fetch_weather_once.return_value.path = Path(tmp_dir) / "aquapi.sqlite3"
+
+                exit_code = main(["fetch-weather-once", "--config", str(config_path)])
+
+        self.assertEqual(exit_code, 0)
+        fetch_weather_once.assert_called_once()
+        self.assertIn("Saved 48 hourly weather records", stdout.getvalue())
+
+    def test_weather_collect_command_calls_collector(self) -> None:
+        with TemporaryDirectory() as tmp_dir:
+            config_path = write_sqlite_config(Path(tmp_dir), weather_enabled=True)
+
+            with patch("aquapi.cli.collect_weather_forever") as collect_weather_forever:
+                exit_code = main(["weather-collect", "--config", str(config_path)])
+
+        self.assertEqual(exit_code, 0)
+        collect_weather_forever.assert_called_once()
+
+    def test_fetch_weather_once_rejects_disabled_weather(self) -> None:
+        with TemporaryDirectory() as tmp_dir:
+            config_path = write_sqlite_config(Path(tmp_dir), weather_enabled=False)
+
+            with patch("sys.stderr", new_callable=StringIO) as stderr:
+                exit_code = main(["fetch-weather-once", "--config", str(config_path)])
+
+        self.assertEqual(exit_code, 1)
+        self.assertIn("weather is disabled", stderr.getvalue())
+
+def write_sqlite_config(tmp_path: Path, *, weather_enabled: bool = False) -> Path:
     config_path = tmp_path / "aquapi.json"
     config_path.write_text(
         json.dumps(
@@ -205,6 +242,16 @@ def write_sqlite_config(tmp_path: Path) -> Path:
                     "retention_days": 365,
                 },
                 "sensors": {},
+                "weather": {
+                    "enabled": weather_enabled,
+                    "source": "open-meteo",
+                    "latitude": 35.681236,
+                    "longitude": 139.767125,
+                    "timezone": "Asia/Tokyo",
+                    "interval_seconds": 3600,
+                    "forecast_days": 2,
+                    "retention_days": 365,
+                },
             },
             ensure_ascii=False,
         ),

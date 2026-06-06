@@ -20,6 +20,7 @@
 - 未登録センサーの `unknown` 表示
 - JSON API
 - SQLite ログ保存
+- Open-Meteo 外部気象連携
 - systemd による API / collector の常駐
 
 未対応:
@@ -85,6 +86,16 @@ cp configs/aquapi.example.json configs/aquapi.json
     "database_path": "/var/lib/aquapi/aquapi.sqlite3",
     "retention_days": 365
   },
+  "weather": {
+    "enabled": true,
+    "source": "open-meteo",
+    "latitude": 35.681236,
+    "longitude": 139.767125,
+    "timezone": "Asia/Tokyo",
+    "interval_seconds": 3600,
+    "forecast_days": 2,
+    "retention_days": 365
+  },
   "sensors": {
     "28-00000020f5ed": {
       "name": "増田川水槽",
@@ -104,6 +115,10 @@ cp configs/aquapi.example.json configs/aquapi.json
 API サーバーは `listen_addr` と `listen_port` で待ち受けます。初期ポートは `8080` です。
 
 ログ保存は `logging` で設定します。標準の保存方式は SQLite です。`interval_seconds` は継続記録の間隔、`database_path` は SQLite DB ファイル、`retention_days` は保持日数です。`retention_days <= 0` の場合、古い readings は削除しません。
+
+外部気象連携は `weather` で設定します。`configs/aquapi.example.json` では、個人の所在地を含めないため、仮の緯度経度として東京駅付近を設定しています。実運用では Git 管理しない `configs/aquapi.json` に自分の地域の座標を設定してください。
+
+Open-Meteo の値は、水槽や室内で測った実測値ではなく、地域気象の参考値です。水温変化と外部条件を後から見比べるために、1時間ごとの気温・湿度・風・降水などを SQLite に保存します。
 
 ## CLI 実行
 
@@ -176,6 +191,9 @@ API 一覧:
 - `GET /api/sensors/{sensor_id}`
 - `GET /api/readings/series?sensor_id={sensor_id}&range=24h`
 - `GET /api/readings/summary?range=24h`
+- `GET /api/weather/latest`
+- `GET /api/weather/series?range=24h`
+- `GET /api/weather/summary?range=7d`
 
 curl 例:
 
@@ -184,6 +202,7 @@ curl http://aquapi.local:8080/api/health
 curl http://aquapi.local:8080/api/readings
 curl http://aquapi.local:8080/api/summary
 curl http://aquapi.local:8080/api/sensors/28-00000020f5ed
+curl http://aquapi.local:8080/api/weather/latest
 ```
 
 存在しないセンサーIDは JSON エラー付きで 404 を返します。
@@ -220,11 +239,46 @@ python -m aquapi.cli db-stats --config configs/aquapi.json
 python -m aquapi.cli collect --config configs/aquapi.json
 ```
 
-SQLite には `sensors`、`readings`、`metadata` テーブルを作成します。温度は `23.187 C` を `23187` のようにミリ℃の整数として保存します。60秒間隔、5センサー、1年保存でも約 2,628,000 readings なので SQLite で現実的に扱えます。
+Open-Meteo の外部気象を1回だけ取得して SQLite に保存します。
+
+```bash
+python -m aquapi.cli fetch-weather-once --config configs/aquapi.json
+```
+
+出力例:
+
+```text
+Saved 48 hourly weather records to /var/lib/aquapi/aquapi.sqlite3
+```
+
+外部気象を `weather.interval_seconds` ごとに継続取得します。初期値は 3600 秒です。
+
+```bash
+python -m aquapi.cli weather-collect --config configs/aquapi.json
+```
+
+SQLite には `sensors`、`readings`、`metadata`、`weather_hourly` テーブルを作成します。水温は `23.187 C` を `23187` のようにミリ℃の整数として保存します。60秒間隔、5センサー、1年保存でも約 2,628,000 readings なので SQLite で現実的に扱えます。
 
 DB ファイルは Git 管理しません。`*.sqlite`、`*.sqlite3`、`*.db`、`data/` は `.gitignore` に含まれています。
 
 `retention_days` より古い readings は、保存時または DB 初期化時に削除されます。`sensors` table は削除しません。
+
+`weather_hourly` は水温 readings とは別テーブルです。`ts` は Unix time seconds の主キーで、同じ時刻の外部気象は更新されます。緯度経度は micro degree、気温・相対湿度・風速・降水量・降雪量・気圧・蒸発散量・土壌温度・土壌水分は milli 単位の整数、日射量は小数なし相当の整数として保存します。`weather.retention_days` より古い weather records は取得時に削除されます。
+
+取得対象の Open-Meteo hourly variables:
+
+- `temperature_2m`
+- `relative_humidity_2m`
+- `wind_speed_10m`
+- `wind_direction_10m`
+- `precipitation`
+- `snowfall`
+- `cloud_cover`
+- `surface_pressure`
+- `shortwave_radiation`
+- `et0_fao_evapotranspiration`
+- `soil_temperature_0cm`
+- `soil_moisture_0_to_1cm`
 
 JSONL 互換が必要な場合は、明示的に `storage: "jsonl"` を指定してください。
 
@@ -246,6 +300,9 @@ JSONL 互換が必要な場合は、明示的に `storage: "jsonl"` を指定し
 - `GET /api/readings/series?sensor_id={sensor_id}&range=24h`
 - `GET /api/readings/series?name={name}&range=24h`
 - `GET /api/readings/summary?range=24h`
+- `GET /api/weather/latest`
+- `GET /api/weather/series?range=24h`
+- `GET /api/weather/summary?range=7d`
 
 対応 range:
 
@@ -263,11 +320,13 @@ curl 例:
 curl "http://aquapi.local:8080/api/readings/series?sensor_id=28-00000020f5ed&range=24h"
 curl "http://aquapi.local:8080/api/readings/series?name=増田川水槽&range=24h"
 curl "http://aquapi.local:8080/api/readings/summary?range=24h"
+curl "http://aquapi.local:8080/api/weather/series?range=24h"
+curl "http://aquapi.local:8080/api/weather/summary?range=7d"
 ```
 
 ## systemd
 
-Raspberry Pi 上で常駐させる場合は、API サーバーと collector を別 service として起動します。
+Raspberry Pi 上で常駐させる場合は、API サーバー、水温 collector、外部気象 collector を別 service として起動します。
 
 想定配置:
 
@@ -299,6 +358,7 @@ unit をインストールします。
 ```bash
 sudo cp deploy/systemd/aquapi-api.service /etc/systemd/system/
 sudo cp deploy/systemd/aquapi-collect.service /etc/systemd/system/
+sudo cp deploy/systemd/aquapi-weather.service /etc/systemd/system/
 sudo systemctl daemon-reload
 ```
 
@@ -308,6 +368,7 @@ sudo systemctl daemon-reload
 sudo -u aquapi /opt/aquapi/.venv/bin/python -m aquapi.cli read --config /etc/aquapi/aquapi.json
 sudo -u aquapi /opt/aquapi/.venv/bin/python -m aquapi.cli db-init --config /etc/aquapi/aquapi.json
 sudo -u aquapi /opt/aquapi/.venv/bin/python -m aquapi.cli log-once --config /etc/aquapi/aquapi.json
+sudo -u aquapi /opt/aquapi/.venv/bin/python -m aquapi.cli fetch-weather-once --config /etc/aquapi/aquapi.json
 sudo -u aquapi /opt/aquapi/.venv/bin/python -m aquapi.cli db-stats --config /etc/aquapi/aquapi.json
 ```
 
@@ -316,6 +377,7 @@ service を起動します。
 ```bash
 sudo systemctl enable --now aquapi-api.service
 sudo systemctl enable --now aquapi-collect.service
+sudo systemctl enable --now aquapi-weather.service
 ```
 
 状態確認:
@@ -323,29 +385,32 @@ sudo systemctl enable --now aquapi-collect.service
 ```bash
 systemctl status aquapi-api.service
 systemctl status aquapi-collect.service
+systemctl status aquapi-weather.service
 journalctl -u aquapi-api.service -n 100 --no-pager
 journalctl -u aquapi-collect.service -n 100 --no-pager
+journalctl -u aquapi-weather.service -n 100 --no-pager
 curl http://localhost:8080/api/health
+curl http://localhost:8080/api/weather/latest
 ```
 
 `journalctl` に `ModuleNotFoundError: No module named 'aquapi'` が出る場合は、systemd が使う venv に `aquapi` がインストールされていません。service を止めてから `/opt/aquapi/.venv` に入れ直します。
 
 ```bash
-sudo systemctl stop aquapi-api.service aquapi-collect.service
+sudo systemctl stop aquapi-api.service aquapi-collect.service aquapi-weather.service
 cd /opt/aquapi
 /opt/aquapi/.venv/bin/python -m pip install -e .
 /opt/aquapi/.venv/bin/python -c "import aquapi; print(aquapi.__file__)"
 /opt/aquapi/.venv/bin/python -m aquapi.cli --help
-sudo systemctl start aquapi-api.service aquapi-collect.service
+sudo systemctl start aquapi-api.service aquapi-collect.service aquapi-weather.service
 ```
 
 更新時は service を停止してから pull / install し、設定を確認して再起動します。
 
 ```bash
-sudo systemctl stop aquapi-api.service aquapi-collect.service
+sudo systemctl stop aquapi-api.service aquapi-collect.service aquapi-weather.service
 cd /opt/aquapi
 git pull
 .venv/bin/python -m pip install -e .
 sudo systemctl daemon-reload
-sudo systemctl restart aquapi-api.service aquapi-collect.service
+sudo systemctl restart aquapi-api.service aquapi-collect.service aquapi-weather.service
 ```

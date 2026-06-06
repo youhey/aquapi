@@ -9,12 +9,13 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import parse_qs, unquote, urlparse
 
 from aquapi.config import AppConfig
-from aquapi.logs import build_history_summary_payload, build_series_payload
+from aquapi.logs import RANGE_DELTAS, build_history_summary_payload, build_series_payload
 from aquapi.sensors import (
     ConfiguredSensorReading,
     configured_sensor_reading_to_dict,
     read_all_configured_sensors,
 )
+from aquapi.sqlite_storage import SQLiteStorage
 
 
 ReadingsProvider = Callable[[], list[ConfiguredSensorReading]]
@@ -83,6 +84,15 @@ def handle_api_request(
 
     if path == "/api/readings/summary":
         return _handle_history_summary(state, params)
+
+    if path == "/api/weather/latest":
+        return _handle_weather_latest(state)
+
+    if path == "/api/weather/series":
+        return _handle_weather_series(state, params)
+
+    if path == "/api/weather/summary":
+        return _handle_weather_summary(state, params)
 
     if path == "/api/readings":
         return ApiResponse(HTTPStatus.OK, build_readings_payload(state.readings_provider()))
@@ -180,6 +190,103 @@ def _range_error(exc: ValueError) -> ApiResponse:
             }
         },
     )
+
+
+def _handle_weather_latest(state: ApiState) -> ApiResponse:
+    disabled = _weather_disabled_response(state)
+    if disabled is not None:
+        return disabled
+
+    payload = SQLiteStorage(state.config.logging.database_path).get_latest_weather()
+    if payload is None:
+        return _weather_not_found_response()
+
+    return ApiResponse(
+        HTTPStatus.OK,
+        {
+            "generated_at": _now_iso(),
+            "weather": payload,
+        },
+    )
+
+
+def _handle_weather_series(state: ApiState, params: dict[str, str]) -> ApiResponse:
+    disabled = _weather_disabled_response(state)
+    if disabled is not None:
+        return disabled
+
+    range_text = params.get("range", "24h")
+    try:
+        start, end = _range_bounds(range_text)
+    except ValueError as exc:
+        return _range_error(exc)
+
+    points = SQLiteStorage(state.config.logging.database_path).get_weather_series(
+        start=start,
+        end=end,
+    )
+    return ApiResponse(
+        HTTPStatus.OK,
+        {
+            "range": range_text,
+            "points": points,
+        },
+    )
+
+
+def _handle_weather_summary(state: ApiState, params: dict[str, str]) -> ApiResponse:
+    disabled = _weather_disabled_response(state)
+    if disabled is not None:
+        return disabled
+
+    range_text = params.get("range", "7d")
+    try:
+        start, end = _range_bounds(range_text)
+    except ValueError as exc:
+        return _range_error(exc)
+
+    return ApiResponse(
+        HTTPStatus.OK,
+        SQLiteStorage(state.config.logging.database_path).get_weather_summary(
+            range_text=range_text,
+            start=start,
+            end=end,
+        ),
+    )
+
+
+def _weather_disabled_response(state: ApiState) -> ApiResponse | None:
+    if state.config.weather.enabled:
+        return None
+    return ApiResponse(
+        HTTPStatus.SERVICE_UNAVAILABLE,
+        {
+            "error": {
+                "code": "weather_disabled",
+                "message": "weather integration is disabled",
+            }
+        },
+    )
+
+
+def _weather_not_found_response() -> ApiResponse:
+    return ApiResponse(
+        HTTPStatus.NOT_FOUND,
+        {
+            "error": {
+                "code": "weather_not_found",
+                "message": "weather data not found",
+            }
+        },
+    )
+
+
+def _range_bounds(range_text: str) -> tuple[datetime, datetime]:
+    delta = RANGE_DELTAS.get(range_text)
+    if delta is None:
+        raise ValueError(f"unsupported range: {range_text}")
+    end = datetime.now().astimezone()
+    return end - delta, end
 
 
 def build_readings_payload(readings: list[ConfiguredSensorReading]) -> dict[str, object]:

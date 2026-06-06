@@ -22,7 +22,14 @@ class SystemdUnitTests(unittest.TestCase):
         self.assertIn("ExecStart=/opt/aquapi/.venv/bin/python -m aquapi.cli collect", body)
         self.assertIn("Restart=always", body)
 
+    def test_weather_unit_runs_weather_collector(self) -> None:
+        body = (ROOT / "deploy/systemd/aquapi-weather.service").read_text(encoding="utf-8")
+
+        self.assertIn("User=aquapi", body)
+        self.assertIn("WorkingDirectory=/opt/aquapi", body)
+        self.assertIn("ExecStart=/opt/aquapi/.venv/bin/python -m aquapi.cli weather-collect", body)
+        self.assertIn("After=network-online.target", body)
+
 
 if __name__ == "__main__":
     unittest.main()
-

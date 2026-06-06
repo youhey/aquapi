@@ -7,6 +7,7 @@ import unittest
 from aquapi.config import AppConfig, LoggingConfig, SensorConfig
 from aquapi.sqlite_storage import SQLiteStorage
 from aquapi.sensors import ConfiguredSensorReading
+from aquapi.weather import WeatherHourlyReading
 
 
 class SQLiteStorageTests(unittest.TestCase):
@@ -31,6 +32,7 @@ class SQLiteStorageTests(unittest.TestCase):
         self.assertIn("sensors", tables)
         self.assertIn("readings", tables)
         self.assertIn("metadata", tables)
+        self.assertIn("weather_hourly", tables)
         self.assertEqual(schema_version, "1")
 
     def test_sync_sensors_inserts_and_updates_sensor_config(self) -> None:
@@ -162,6 +164,85 @@ class SQLiteStorageTests(unittest.TestCase):
         self.assertEqual(readings_count, 1)
         self.assertEqual(sensors_count, 1)
 
+    def test_insert_weather_hourly_saves_and_updates_same_ts(self) -> None:
+        with TemporaryDirectory() as tmp_dir:
+            storage = SQLiteStorage(Path(tmp_dir) / "aquapi.sqlite3")
+            ts = datetime(2026, 6, 6, 12, 0, tzinfo=timezone.utc)
+            fetched_at = datetime(2026, 6, 6, 11, 58, tzinfo=timezone.utc)
+
+            first = storage.insert_weather_hourly([make_weather(ts, temperature_c=25.1)], fetched_at)
+            second = storage.insert_weather_hourly([make_weather(ts, temperature_c=26.2)], fetched_at)
+            latest = storage.get_latest_weather(now=ts)
+
+            with sqlite3.connect(storage.database_path) as conn:
+                count = conn.execute("SELECT COUNT(*) FROM weather_hourly").fetchone()[0]
+
+        self.assertEqual(first.saved_count, 1)
+        self.assertEqual(second.saved_count, 1)
+        self.assertEqual(count, 1)
+        assert latest is not None
+        self.assertEqual(latest["temperature_c"], 26.2)
+        self.assertEqual(latest["latitude"], 35.681236)
+
+    def test_get_latest_weather_ignores_future_forecast(self) -> None:
+        with TemporaryDirectory() as tmp_dir:
+            storage = SQLiteStorage(Path(tmp_dir) / "aquapi.sqlite3")
+            now = datetime(2026, 6, 6, 12, 0, tzinfo=timezone.utc)
+
+            storage.insert_weather_hourly(
+                [
+                    make_weather(now - timedelta(hours=1), temperature_c=25.1),
+                    make_weather(now + timedelta(hours=12), temperature_c=30.0),
+                ],
+                now,
+            )
+            latest = storage.get_latest_weather(now=now)
+
+        assert latest is not None
+        self.assertEqual(latest["temperature_c"], 25.1)
+
+    def test_get_weather_series_and_retention(self) -> None:
+        with TemporaryDirectory() as tmp_dir:
+            storage = SQLiteStorage(Path(tmp_dir) / "aquapi.sqlite3")
+            now = datetime(2026, 6, 6, 12, 0, tzinfo=timezone.utc)
+            storage.insert_weather_hourly(
+                [
+                    make_weather(now - timedelta(days=3), temperature_c=20.0),
+                    make_weather(now - timedelta(hours=1), temperature_c=25.1),
+                ],
+                now,
+            )
+
+            storage.apply_weather_retention(1, now=now)
+            series = storage.get_weather_series(start=now - timedelta(days=7), end=now)
+
+        self.assertEqual(len(series), 1)
+        self.assertEqual(series[0]["temperature_c"], 25.1)
+
+    def test_get_weather_summary_returns_min_avg_max_and_precipitation(self) -> None:
+        with TemporaryDirectory() as tmp_dir:
+            storage = SQLiteStorage(Path(tmp_dir) / "aquapi.sqlite3")
+            now = datetime(2026, 6, 6, 12, 0, tzinfo=timezone.utc)
+            storage.insert_weather_hourly(
+                [
+                    make_weather(now - timedelta(hours=2), temperature_c=20.0, precipitation_mm=1.2),
+                    make_weather(now - timedelta(hours=1), temperature_c=26.0, precipitation_mm=0.8),
+                ],
+                now,
+            )
+
+            summary = storage.get_weather_summary(
+                range_text="24h",
+                start=now - timedelta(hours=24),
+                end=now,
+            )
+
+        self.assertEqual(summary["sample_count"], 2)
+        self.assertEqual(summary["temperature"]["min_c"], 20.0)
+        self.assertEqual(summary["temperature"]["avg_c"], 23.0)
+        self.assertEqual(summary["temperature"]["max_c"], 26.0)
+        self.assertEqual(summary["precipitation"]["total_mm"], 2.0)
+
 
 def make_config(*, name: str, offset: float) -> AppConfig:
     return AppConfig(
@@ -202,6 +283,31 @@ def make_reading(
     )
 
 
+def make_weather(
+    ts: datetime,
+    *,
+    temperature_c: float | None,
+    precipitation_mm: float | None = 0.0,
+) -> WeatherHourlyReading:
+    return WeatherHourlyReading(
+        ts=ts,
+        source="open-meteo",
+        latitude=35.681236,
+        longitude=139.767125,
+        temperature_c=temperature_c,
+        relative_humidity_percent=63.0,
+        wind_speed_ms=2.4,
+        wind_direction_deg=180,
+        precipitation_mm=precipitation_mm,
+        snowfall_cm=0.0,
+        cloud_cover_percent=80,
+        surface_pressure_hpa=1007.2,
+        shortwave_radiation=320,
+        evapotranspiration_mm=0.12,
+        soil_temperature_c=23.4,
+        soil_moisture_m3_m3=0.31,
+    )
+
+
 if __name__ == "__main__":
     unittest.main()
-

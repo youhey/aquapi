@@ -14,6 +14,7 @@ from aquapi.sensors import (
     configured_sensor_reading_to_dict,
     read_all_configured_sensors,
 )
+from aquapi.weather import collect_weather_forever, fetch_weather_once
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -40,6 +41,18 @@ def build_parser() -> argparse.ArgumentParser:
 
     db_stats_parser = subparsers.add_parser("db-stats", help="SQLite DB の保存状況を表示します")
     db_stats_parser.add_argument("--config", type=Path, required=True, help="センサー設定 JSON のパス")
+
+    fetch_weather_parser = subparsers.add_parser(
+        "fetch-weather-once",
+        help="Open-Meteo の外部気象を1回だけ取得して保存します",
+    )
+    fetch_weather_parser.add_argument("--config", type=Path, required=True, help="センサー設定 JSON のパス")
+
+    weather_collect_parser = subparsers.add_parser(
+        "weather-collect",
+        help="指定間隔で Open-Meteo の外部気象を取得して保存し続けます",
+    )
+    weather_collect_parser.add_argument("--config", type=Path, required=True, help="センサー設定 JSON のパス")
 
     return parser
 
@@ -84,6 +97,10 @@ def main(argv: list[str] | None = None) -> int:
         return run_db_init(config_path=args.config)
     if args.command == "db-stats":
         return run_db_stats(config_path=args.config)
+    if args.command == "fetch-weather-once":
+        return run_fetch_weather_once(config_path=args.config)
+    if args.command == "weather-collect":
+        return run_weather_collect(config_path=args.config)
 
     raise AssertionError(f"unsupported command: {args.command}")
 
@@ -180,6 +197,37 @@ def run_db_stats(*, config_path: Path) -> int:
     return 0
 
 
+def run_fetch_weather_once(*, config_path: Path) -> int:
+    config = _load_config_for_weather(config_path)
+    if config is None:
+        return 1
+
+    try:
+        result = fetch_weather_once(config)
+    except (OSError, sqlite3.Error, RuntimeError) as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        return 1
+
+    print(f"Saved {result.saved_count} hourly weather records to {result.path}")
+    return 0
+
+
+def run_weather_collect(*, config_path: Path) -> int:
+    config = _load_config_for_weather(config_path)
+    if config is None:
+        return 1
+
+    try:
+        collect_weather_forever(config)
+    except KeyboardInterrupt:
+        return 0
+    except (OSError, sqlite3.Error, RuntimeError) as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        return 1
+
+    return 0
+
+
 def _load_config_for_logging(config_path: Path) -> AppConfig | None:
     config = _load_config(config_path)
     if config is None:
@@ -189,6 +237,22 @@ def _load_config_for_logging(config_path: Path) -> AppConfig | None:
         print("error: logging is disabled", file=sys.stderr)
         return None
 
+    return config
+
+
+def _load_config_for_weather(config_path: Path) -> AppConfig | None:
+    config = _load_config(config_path)
+    if config is None:
+        return None
+    if not config.weather.enabled:
+        print("error: weather is disabled", file=sys.stderr)
+        return None
+    if config.weather.source != "open-meteo":
+        print("error: only open-meteo weather source is supported", file=sys.stderr)
+        return None
+    if config.logging.storage != "sqlite":
+        print("error: weather storage requires logging.storage sqlite", file=sys.stderr)
+        return None
     return config
 
 

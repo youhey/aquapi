@@ -8,7 +8,9 @@ import unittest
 from aquapi.api import ApiState, build_summary_payload, handle_api_request
 from aquapi.config import AppConfig, LoggingConfig
 from aquapi.logs import write_readings
+from aquapi.sqlite_storage import SQLiteStorage
 from aquapi.sensors import ConfiguredSensorReading
+from aquapi.weather import WeatherHourlyReading
 
 
 def make_reading(
@@ -145,14 +147,98 @@ class ApiTests(unittest.TestCase):
         self.assertEqual(response.status, HTTPStatus.NOT_FOUND)
         self.assertEqual(response.payload["error"]["code"], "sensor_not_found")
 
+    def test_weather_latest_returns_latest_record(self) -> None:
+        with TemporaryDirectory() as tmp_dir:
+            logging_config = make_logging_config(Path(tmp_dir))
+            storage = SQLiteStorage(logging_config.database_path)
+            now = datetime(2026, 6, 6, 12, 0, tzinfo=timezone.utc)
+            storage.insert_weather_hourly([make_weather(now)], now)
+
+            response = handle_api_request(
+                "/api/weather/latest",
+                make_state([], logging_config=logging_config, weather_enabled=True),
+            )
+
+        self.assertEqual(response.status, HTTPStatus.OK)
+        weather = response.payload["weather"]
+        self.assertEqual(weather["temperature_c"], 25.1)
+        self.assertEqual(weather["source"], "open-meteo")
+
+    def test_weather_series_returns_points(self) -> None:
+        with TemporaryDirectory() as tmp_dir:
+            logging_config = make_logging_config(Path(tmp_dir))
+            storage = SQLiteStorage(logging_config.database_path)
+            now = datetime.now(timezone.utc)
+            storage.insert_weather_hourly([make_weather(now - timedelta(minutes=5))], now)
+
+            response = handle_api_request(
+                "/api/weather/series",
+                make_state([], logging_config=logging_config, weather_enabled=True),
+                query={"range": "24h"},
+            )
+
+        self.assertEqual(response.status, HTTPStatus.OK)
+        self.assertEqual(response.payload["points"][0]["temperature_c"], 25.1)
+
+    def test_weather_summary_returns_aggregates(self) -> None:
+        with TemporaryDirectory() as tmp_dir:
+            logging_config = make_logging_config(Path(tmp_dir))
+            storage = SQLiteStorage(logging_config.database_path)
+            now = datetime.now(timezone.utc)
+            storage.insert_weather_hourly(
+                [
+                    make_weather(now - timedelta(hours=2), temperature_c=20.0, precipitation_mm=1.2),
+                    make_weather(now - timedelta(hours=1), temperature_c=26.0, precipitation_mm=0.8),
+                ],
+                now,
+            )
+
+            response = handle_api_request(
+                "/api/weather/summary",
+                make_state([], logging_config=logging_config, weather_enabled=True),
+                query={"range": "24h"},
+            )
+
+        self.assertEqual(response.status, HTTPStatus.OK)
+        self.assertEqual(response.payload["sample_count"], 2)
+        self.assertEqual(response.payload["temperature"]["avg_c"], 23.0)
+        self.assertEqual(response.payload["precipitation"]["total_mm"], 2.0)
+
+    def test_weather_disabled_returns_error(self) -> None:
+        with TemporaryDirectory() as tmp_dir:
+            response = handle_api_request(
+                "/api/weather/latest",
+                make_state([], logging_config=make_logging_config(Path(tmp_dir)), weather_enabled=False),
+            )
+
+        self.assertEqual(response.status, HTTPStatus.SERVICE_UNAVAILABLE)
+        self.assertEqual(response.payload["error"]["code"], "weather_disabled")
+
+    def test_weather_latest_missing_returns_404(self) -> None:
+        with TemporaryDirectory() as tmp_dir:
+            response = handle_api_request(
+                "/api/weather/latest",
+                make_state([], logging_config=make_logging_config(Path(tmp_dir)), weather_enabled=True),
+            )
+
+        self.assertEqual(response.status, HTTPStatus.NOT_FOUND)
+        self.assertEqual(response.payload["error"]["code"], "weather_not_found")
+
 
 def make_state(
     readings: list[ConfiguredSensorReading],
     *,
     logging_config: LoggingConfig | None = None,
+    weather_enabled: bool = False,
 ) -> ApiState:
+    from aquapi.config import WeatherConfig
+
     return ApiState(
-        config=AppConfig(sensors={}, logging=logging_config or LoggingConfig()),
+        config=AppConfig(
+            sensors={},
+            logging=logging_config or LoggingConfig(),
+            weather=WeatherConfig(enabled=weather_enabled),
+        ),
         readings_provider=lambda: readings,
     )
 
@@ -164,6 +250,32 @@ def make_logging_config(data_dir: Path) -> LoggingConfig:
         storage="sqlite",
         database_path=data_dir / "aquapi.sqlite3",
         retention_days=365,
+    )
+
+
+def make_weather(
+    ts: datetime,
+    *,
+    temperature_c: float | None = 25.1,
+    precipitation_mm: float | None = 0.0,
+) -> WeatherHourlyReading:
+    return WeatherHourlyReading(
+        ts=ts,
+        source="open-meteo",
+        latitude=35.681236,
+        longitude=139.767125,
+        temperature_c=temperature_c,
+        relative_humidity_percent=63.0,
+        wind_speed_ms=2.4,
+        wind_direction_deg=180,
+        precipitation_mm=precipitation_mm,
+        snowfall_cm=0.0,
+        cloud_cover_percent=80,
+        surface_pressure_hpa=1007.2,
+        shortwave_radiation=320,
+        evapotranspiration_mm=0.12,
+        soil_temperature_c=23.4,
+        soil_moisture_m3_m3=0.31,
     )
 
 
