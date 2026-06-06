@@ -4,6 +4,8 @@ import re
 from dataclasses import dataclass
 from pathlib import Path
 
+from aquapi.config import AppConfig, SensorConfig
+
 
 DEFAULT_W1_BASE_PATH = Path("/sys/bus/w1/devices")
 TEMPERATURE_RE = re.compile(r"\bt=(-?\d+)\b")
@@ -19,6 +21,22 @@ class SensorReading:
     temperature_c: float
     crc_ok: bool
     raw: str
+
+
+@dataclass(frozen=True)
+class ConfiguredSensorReading:
+    sensor_id: str
+    name: str
+    type: str
+    raw_temperature_c: float | None
+    temperature_c: float | None
+    offset: float
+    min: float | None
+    max: float | None
+    status: str
+    crc_ok: bool
+    raw: str
+    error: str | None = None
 
 
 def discover_sensor_paths(base_path: Path = DEFAULT_W1_BASE_PATH) -> list[Path]:
@@ -53,4 +71,101 @@ def read_sensor(sensor_path: Path) -> SensorReading:
 
 def read_all_sensors(base_path: Path = DEFAULT_W1_BASE_PATH) -> list[SensorReading]:
     return [read_sensor(sensor_path) for sensor_path in discover_sensor_paths(base_path)]
+
+
+def apply_sensor_config(
+    reading: SensorReading,
+    sensor_config: SensorConfig | None,
+) -> ConfiguredSensorReading:
+    if sensor_config is None:
+        return ConfiguredSensorReading(
+            sensor_id=reading.sensor_id,
+            name="unknown",
+            type="unknown",
+            raw_temperature_c=reading.temperature_c,
+            temperature_c=reading.temperature_c,
+            offset=0.0,
+            min=None,
+            max=None,
+            status="unknown",
+            crc_ok=reading.crc_ok,
+            raw=reading.raw,
+        )
+
+    temperature_c = reading.temperature_c + sensor_config.offset
+
+    return ConfiguredSensorReading(
+        sensor_id=reading.sensor_id,
+        name=sensor_config.name,
+        type=sensor_config.type,
+        raw_temperature_c=reading.temperature_c,
+        temperature_c=temperature_c,
+        offset=sensor_config.offset,
+        min=sensor_config.min,
+        max=sensor_config.max,
+        status=_threshold_status(temperature_c, sensor_config),
+        crc_ok=reading.crc_ok,
+        raw=reading.raw,
+    )
+
+
+def read_all_configured_sensors(
+    base_path: Path = DEFAULT_W1_BASE_PATH,
+    config: AppConfig | None = None,
+) -> list[ConfiguredSensorReading]:
+    results: list[ConfiguredSensorReading] = []
+
+    for sensor_path in discover_sensor_paths(base_path):
+        sensor_config = config.find_sensor(sensor_path.name) if config is not None else None
+        try:
+            reading = read_sensor(sensor_path)
+        except (OSError, SensorReadError, ValueError) as exc:
+            results.append(_error_reading(sensor_path.name, sensor_config, exc))
+            continue
+
+        results.append(apply_sensor_config(reading, sensor_config))
+
+    return results
+
+
+def _threshold_status(temperature_c: float, sensor_config: SensorConfig) -> str:
+    if sensor_config.min is not None and temperature_c < sensor_config.min:
+        return "low"
+    if sensor_config.max is not None and temperature_c > sensor_config.max:
+        return "high"
+    return "ok"
+
+
+def _error_reading(
+    sensor_id: str,
+    sensor_config: SensorConfig | None,
+    exc: Exception,
+) -> ConfiguredSensorReading:
+    if sensor_config is None:
+        name = "unknown"
+        sensor_type = "unknown"
+        offset = 0.0
+        min_temperature = None
+        max_temperature = None
+    else:
+        name = sensor_config.name
+        sensor_type = sensor_config.type
+        offset = sensor_config.offset
+        min_temperature = sensor_config.min
+        max_temperature = sensor_config.max
+
+    return ConfiguredSensorReading(
+        sensor_id=sensor_id,
+        name=name,
+        type=sensor_type,
+        raw_temperature_c=None,
+        temperature_c=None,
+        offset=offset,
+        min=min_temperature,
+        max=max_temperature,
+        status="error",
+        crc_ok=False,
+        raw="",
+        error=str(exc),
+    )
 

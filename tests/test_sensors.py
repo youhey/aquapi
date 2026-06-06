@@ -2,7 +2,14 @@ from pathlib import Path
 from tempfile import TemporaryDirectory
 import unittest
 
-from aquapi.sensors import SensorReadError, discover_sensor_paths, read_sensor
+from aquapi.config import AppConfig, SensorConfig
+from aquapi.sensors import (
+    SensorReadError,
+    apply_sensor_config,
+    discover_sensor_paths,
+    read_all_configured_sensors,
+    read_sensor,
+)
 
 
 VALID_W1_SLAVE = """73 01 7f 80 7f ff 0d 10 ce : crc=ce YES
@@ -63,6 +70,100 @@ class SensorTests(unittest.TestCase):
             (tmp_path / "28-not-a-directory").write_text("", encoding="utf-8")
 
             self.assertEqual(discover_sensor_paths(tmp_path), [sensor_a, sensor_b])
+
+    def test_apply_sensor_config_applies_offset_and_ok_status(self) -> None:
+        with TemporaryDirectory() as tmp_dir:
+            sensor_path = write_sensor(Path(tmp_dir), "28-00000020f5ed", VALID_W1_SLAVE)
+            reading = read_sensor(sensor_path)
+
+        configured = apply_sensor_config(
+            reading,
+            SensorConfig(
+                sensor_id="28-00000020f5ed",
+                name="増田川水槽",
+                type="water",
+                offset=-0.2,
+                min=18.0,
+                max=28.0,
+            ),
+        )
+
+        self.assertEqual(configured.raw_temperature_c, 23.187)
+        self.assertAlmostEqual(configured.temperature_c, 22.987)
+        self.assertEqual(configured.offset, -0.2)
+        self.assertEqual(configured.status, "ok")
+
+    def test_apply_sensor_config_returns_low_status(self) -> None:
+        with TemporaryDirectory() as tmp_dir:
+            sensor_path = write_sensor(Path(tmp_dir), "28-00000020f5ed", VALID_W1_SLAVE)
+            reading = read_sensor(sensor_path)
+
+        configured = apply_sensor_config(
+            reading,
+            SensorConfig(
+                sensor_id="28-00000020f5ed",
+                name="増田川水槽",
+                type="water",
+                offset=0.0,
+                min=24.0,
+                max=28.0,
+            ),
+        )
+
+        self.assertEqual(configured.status, "low")
+
+    def test_apply_sensor_config_returns_high_status(self) -> None:
+        with TemporaryDirectory() as tmp_dir:
+            sensor_path = write_sensor(Path(tmp_dir), "28-00000020f5ed", VALID_W1_SLAVE)
+            reading = read_sensor(sensor_path)
+
+        configured = apply_sensor_config(
+            reading,
+            SensorConfig(
+                sensor_id="28-00000020f5ed",
+                name="増田川水槽",
+                type="water",
+                offset=0.0,
+                min=18.0,
+                max=23.0,
+            ),
+        )
+
+        self.assertEqual(configured.status, "high")
+
+    def test_apply_sensor_config_returns_unknown_for_unregistered_sensor(self) -> None:
+        with TemporaryDirectory() as tmp_dir:
+            sensor_path = write_sensor(Path(tmp_dir), "28-xxxxxxxxxxxx", VALID_W1_SLAVE)
+            reading = read_sensor(sensor_path)
+
+        configured = apply_sensor_config(reading, None)
+
+        self.assertEqual(configured.name, "unknown")
+        self.assertEqual(configured.type, "unknown")
+        self.assertEqual(configured.status, "unknown")
+
+    def test_read_all_configured_sensors_returns_error_for_crc_no(self) -> None:
+        with TemporaryDirectory() as tmp_dir:
+            tmp_path = Path(tmp_dir)
+            write_sensor(tmp_path, "28-000000224fb6", CRC_NO_W1_SLAVE)
+            config = AppConfig(
+                sensors={
+                    "28-000000224fb6": SensorConfig(
+                        sensor_id="28-000000224fb6",
+                        name="めだか水槽",
+                        type="water",
+                        offset=0.0,
+                        min=18.0,
+                        max=28.0,
+                    )
+                }
+            )
+
+            readings = read_all_configured_sensors(tmp_path, config)
+
+        self.assertEqual(readings[0].name, "めだか水槽")
+        self.assertEqual(readings[0].status, "error")
+        self.assertFalse(readings[0].crc_ok)
 
 
 if __name__ == "__main__":
