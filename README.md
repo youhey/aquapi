@@ -307,6 +307,17 @@ journalctl -u aquapi-collect.service -n 100 --no-pager
 curl http://localhost:8080/api/health
 ```
 
+`journalctl` に `ModuleNotFoundError: No module named 'aquapi'` が出る場合は、systemd が使う venv に `aquapi` がインストールされていません。service を止めてから `/opt/aquapi/.venv` に入れ直します。
+
+```bash
+sudo systemctl stop aquapi-api.service aquapi-collect.service
+cd /opt/aquapi
+/opt/aquapi/.venv/bin/python -m pip install -e .
+/opt/aquapi/.venv/bin/python -c "import aquapi; print(aquapi.__file__)"
+/opt/aquapi/.venv/bin/python -m aquapi.cli --help
+sudo systemctl start aquapi-api.service aquapi-collect.service
+```
+
 更新時は service を停止してから pull / install し、設定を確認して再起動します。
 
 ```bash
