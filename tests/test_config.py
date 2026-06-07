@@ -6,6 +6,9 @@ import unittest
 from aquapi.config import load_config
 
 
+ROOT = Path(__file__).resolve().parents[1]
+
+
 class ConfigTests(unittest.TestCase):
     def test_load_config_reads_sensor_mapping(self) -> None:
         with TemporaryDirectory() as tmp_dir:
@@ -36,6 +39,7 @@ class ConfigTests(unittest.TestCase):
                             "28-00000020f5ed": {
                                 "name": "増田川水槽",
                                 "short_name": "増田川",
+                                "short_name_ascii": "MASUDA",
                                 "type": "water",
                                 "role": "aquarium",
                                 "enabled": True,
@@ -59,6 +63,7 @@ class ConfigTests(unittest.TestCase):
         assert sensor_config is not None
         self.assertEqual(sensor_config.name, "増田川水槽")
         self.assertEqual(sensor_config.short_name, "増田川")
+        self.assertEqual(sensor_config.short_name_ascii, "MASUDA")
         self.assertEqual(sensor_config.type, "water")
         self.assertEqual(sensor_config.role, "aquarium")
         self.assertTrue(sensor_config.enabled)
@@ -116,10 +121,13 @@ class ConfigTests(unittest.TestCase):
         assert unknown is not None
         self.assertEqual(water.role, "aquarium")
         self.assertEqual(water.short_name, "水槽")
+        self.assertEqual(water.short_name_ascii, "")
         self.assertEqual(air.role, "outdoor")
         self.assertEqual(air.short_name, "外気")
+        self.assertEqual(air.short_name_ascii, "")
         self.assertEqual(unknown.role, "unknown")
         self.assertEqual(unknown.short_name, "未分類")
+        self.assertEqual(unknown.short_name_ascii, "")
         self.assertTrue(water.enabled)
         self.assertTrue(water.visible)
         self.assertEqual(water.sort_order, 1000)
@@ -129,6 +137,40 @@ class ConfigTests(unittest.TestCase):
         self.assertEqual(config.weather.interval_seconds, 3600)
         self.assertEqual(config.weather.forecast_days, 2)
         self.assertEqual(config.weather.retention_days, 365)
+
+    def test_load_config_defaults_short_name_ascii_from_ascii_names(self) -> None:
+        with TemporaryDirectory() as tmp_dir:
+            config_path = Path(tmp_dir) / "aquapi.json"
+            config_path.write_text(
+                json.dumps(
+                    {
+                        "sensors": {
+                            "28-ascii-short": {
+                                "name": "LongName",
+                                "short_name": "SHORT",
+                                "type": "water",
+                                "offset": 0.0,
+                            },
+                            "28-ascii-name": {
+                                "name": "OUTDOOR",
+                                "type": "air",
+                                "offset": 0.0,
+                            },
+                        }
+                    },
+                    ensure_ascii=False,
+                ),
+                encoding="utf-8",
+            )
+
+            config = load_config(config_path)
+
+        ascii_short = config.find_sensor("28-ascii-short")
+        ascii_name = config.find_sensor("28-ascii-name")
+        assert ascii_short is not None
+        assert ascii_name is not None
+        self.assertEqual(ascii_short.short_name_ascii, "SHORT")
+        self.assertEqual(ascii_name.short_name_ascii, "OUTDOOR")
 
     def test_load_config_defaults_api_listen_values(self) -> None:
         with TemporaryDirectory() as tmp_dir:
@@ -162,6 +204,13 @@ class ConfigTests(unittest.TestCase):
         self.assertEqual(config.logging.retention_days, 365)
         self.assertFalse(config.weather.enabled)
         self.assertEqual(config.weather.source, "open-meteo")
+
+    def test_example_config_includes_short_name_ascii(self) -> None:
+        config = load_config(ROOT / "configs/aquapi.example.json")
+
+        sensor_config = config.find_sensor("28-00000020f5ed")
+        assert sensor_config is not None
+        self.assertEqual(sensor_config.short_name_ascii, "MASUDA")
 
     def test_load_config_can_select_jsonl_storage(self) -> None:
         with TemporaryDirectory() as tmp_dir:

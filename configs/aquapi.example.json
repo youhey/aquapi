@@ -22,6 +22,7 @@
     "28-00000020f5ed": {
       "name": "増田川水槽",
       "short_name": "増田川",
+      "short_name_ascii": "MASUDA",
       "type": "water",
       "role": "aquarium",
       "enabled": true,
@@ -34,6 +35,7 @@
     "28-000000224fb6": {
       "name": "めだか水槽",
       "short_name": "めだか",
+      "short_name_ascii": "MEDAKA",
       "type": "water",
       "role": "aquarium",
       "enabled": true,
@@ -46,6 +48,7 @@
     "28-000000230ee6": {
       "name": "ミニ水槽",
       "short_name": "ミニ",
+      "short_name_ascii": "MINI",
       "type": "water",
       "role": "aquarium",
       "enabled": true,
@@ -58,6 +61,7 @@
     "28-000000235d5e": {
       "name": "金魚水槽",
       "short_name": "金魚",
+      "short_name_ascii": "KINGYO",
       "type": "water",
       "role": "aquarium",
       "enabled": true,
@@ -70,6 +74,7 @@
     "28-00000023733a": {
       "name": "外気",
       "short_name": "外気",
+      "short_name_ascii": "OUTDOOR",
       "type": "air",
       "role": "outdoor",
       "enabled": true,

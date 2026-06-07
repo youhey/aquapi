@@ -19,12 +19,19 @@ class SensorConfig:
     visible: bool = True
     sort_order: int = 1000
     short_name: str = ""
+    short_name_ascii: str = ""
 
     def __post_init__(self) -> None:
         if self.role == "":
             object.__setattr__(self, "role", default_sensor_role(self.type))
         if self.short_name == "":
             object.__setattr__(self, "short_name", default_short_name(self.name))
+        if self.short_name_ascii == "":
+            object.__setattr__(
+                self,
+                "short_name_ascii",
+                default_short_name_ascii(short_name=self.short_name, name=self.name),
+            )
 
 
 @dataclass(frozen=True)
@@ -90,6 +97,7 @@ def load_config(path: Path) -> AppConfig:
             visible=_optional_bool(raw_config, "visible", default=True),
             sort_order=_optional_sort_order(raw_config, "sort_order", default=1000),
             short_name=_optional_short_name(raw_config, "short_name"),
+            short_name_ascii=_optional_short_name_ascii(raw_config, "short_name_ascii"),
         )
 
     return AppConfig(
@@ -203,6 +211,17 @@ def _optional_short_name(data: dict[str, Any], key: str) -> str:
     return value
 
 
+def _optional_short_name_ascii(data: dict[str, Any], key: str) -> str:
+    value = data.get(key, "")
+    if value == "":
+        return ""
+    if not isinstance(value, str):
+        raise ValueError(f"{key} は文字列である必要があります")
+    if not value.isascii():
+        raise ValueError(f"{key} は ASCII 文字列である必要があります")
+    return value
+
+
 def default_sensor_role(sensor_type: object) -> str:
     if sensor_type == "water":
         return "aquarium"
@@ -214,6 +233,14 @@ def default_sensor_role(sensor_type: object) -> str:
 def default_short_name(name: str) -> str:
     short_name = name.removesuffix("水槽")
     return short_name or name
+
+
+def default_short_name_ascii(*, short_name: str, name: str) -> str:
+    if short_name.isascii():
+        return short_name
+    if name.isascii():
+        return name
+    return ""
 
 
 def _optional_number(data: dict[str, Any], key: str, *, default: float) -> float:

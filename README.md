@@ -73,7 +73,7 @@ cp configs/aquapi.example.json configs/aquapi.json
 
 `configs/aquapi.json` はローカル運用設定として `.gitignore` に含まれています。
 
-センサーIDごとに `name`、`short_name`、`type`、`role`、`enabled`、`visible`、`sort_order`、`offset`、`min`、`max` を設定します。
+センサーIDごとに `name`、`short_name`、`short_name_ascii`、`type`、`role`、`enabled`、`visible`、`sort_order`、`offset`、`min`、`max` を設定します。
 
 ```json
 {
@@ -100,6 +100,7 @@ cp configs/aquapi.example.json configs/aquapi.json
     "28-00000020f5ed": {
       "name": "増田川水槽",
       "short_name": "増田川",
+      "short_name_ascii": "MASUDA",
       "type": "water",
       "role": "aquarium",
       "enabled": true,
@@ -122,6 +123,8 @@ cp configs/aquapi.example.json configs/aquapi.json
 `enabled: false` のセンサーは読み取り・ログ保存・API表示から除外します。`visible: false` のセンサーは読み取り・ログ保存は継続しますが、`/api/readings` と `/api/summary` には表示しません。水槽カード表示では `role: "aquarium"` かつ `enabled: true` かつ `visible: true` を表示対象にしてください。`sort_order` は Viewer/API の表示順で、`sort_order ASC`、`name ASC`、`sensor_id ASC` の順に並びます。
 
 `short_name` は M5Stack などの小さい画面向けの短い表示名です。未指定時は `name` 末尾の `水槽` を除いた文字列を使い、除去後に空になる場合は `name` をそのまま使います。
+
+`short_name_ascii` は、日本語フォント対応が難しい M5Stack などの端末向けの ASCII 短縮名です。macOS Viewer などでは `short_name` / `name` を使い、M5Stack では `short_name_ascii`、`short_name`、`name`、`sensor_id` の順に表示名を選ぶ想定です。未指定時は ASCII の `short_name` または `name` から補完し、それもない場合は空文字になります。M5Stack で使うセンサーには明示設定を推奨します。
 
 API サーバーは `listen_addr` と `listen_port` で待ち受けます。初期ポートは `8080` です。
 
@@ -162,6 +165,7 @@ python -m aquapi.cli read --config configs/aquapi.json --json
       "sensor_id": "28-00000020f5ed",
       "name": "増田川水槽",
       "short_name": "増田川",
+      "short_name_ascii": "MASUDA",
       "type": "water",
       "role": "aquarium",
       "enabled": true,
@@ -227,9 +231,9 @@ curl http://aquapi.local:8080/api/weather/latest
 
 存在しないセンサーIDは JSON エラー付きで 404 を返します。
 
-`/api/readings` の各 sensor item には `role`、`enabled`、`visible`、`sort_order` が含まれます。`/api/sensors` は設定ファイル上のセンサーマスタを返し、Viewer が表示順や分類を判断するために使えます。
+`/api/readings` の各 sensor item には `short_name`、`short_name_ascii`、`role`、`enabled`、`visible`、`sort_order` が含まれます。`/api/sensors` は設定ファイル上のセンサーマスタを返し、Viewer が表示順や分類を判断するために使えます。
 
-`/api/monitoring/compact` は M5Stack / Widget / 小型表示端末向けの軽量 API です。複数 API を組み合わせず、この API だけで水槽の最低限の状態を表示できます。対象は `role: "aquarium"`、`enabled: true`、`visible: true` のセンサーだけです。
+`/api/monitoring/compact` は M5Stack / Widget / 小型表示端末向けの軽量 API です。複数 API を組み合わせず、この API だけで水槽の最低限の状態を表示できます。対象は `role: "aquarium"`、`enabled: true`、`visible: true` のセンサーだけです。`tanks[]` には `short_name` と `short_name_ascii` が含まれます。
 
 compact API の全体 `level` / `label`:
 
@@ -312,7 +316,7 @@ Saved 48 hourly weather records to /var/lib/aquapi/aquapi.sqlite3
 python -m aquapi.cli weather-collect --config configs/aquapi.json
 ```
 
-SQLite には `sensors`、`readings`、`metadata`、`weather_hourly` テーブルを作成します。`sensors` には `role`、`enabled`、`visible`、`sort_order` も保存します。水温は `23.187 C` を `23187` のようにミリ℃の整数として保存します。60秒間隔、5センサー、1年保存でも約 2,628,000 readings なので SQLite で現実的に扱えます。
+SQLite には `sensors`、`readings`、`metadata`、`weather_hourly` テーブルを作成します。`sensors` には `short_name`、`short_name_ascii`、`role`、`enabled`、`visible`、`sort_order` も保存します。水温は `23.187 C` を `23187` のようにミリ℃の整数として保存します。60秒間隔、5センサー、1年保存でも約 2,628,000 readings なので SQLite で現実的に扱えます。
 
 DB ファイルは Git 管理しません。`*.sqlite`、`*.sqlite3`、`*.db`、`data/` は `.gitignore` に含まれています。
 

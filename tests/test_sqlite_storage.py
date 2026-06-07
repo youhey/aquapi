@@ -40,7 +40,9 @@ class SQLiteStorageTests(unittest.TestCase):
         self.assertIn("enabled", sensor_columns)
         self.assertIn("visible", sensor_columns)
         self.assertIn("sort_order", sensor_columns)
-        self.assertEqual(schema_version, "2")
+        self.assertIn("short_name", sensor_columns)
+        self.assertIn("short_name_ascii", sensor_columns)
+        self.assertEqual(schema_version, "3")
 
     def test_sync_sensors_inserts_and_updates_sensor_config(self) -> None:
         with TemporaryDirectory() as tmp_dir:
@@ -55,20 +57,25 @@ class SQLiteStorageTests(unittest.TestCase):
                     enabled=False,
                     visible=False,
                     sort_order=20,
+                    short_name="更新",
+                    short_name_ascii="UPDATED",
                 )
             )
 
             with sqlite3.connect(storage.database_path) as conn:
                 row = conn.execute(
                     """
-                    SELECT name, type, role, enabled, visible, sort_order,
+                    SELECT name, short_name, short_name_ascii, type, role, enabled, visible, sort_order,
                            offset_milli_c, min_milli_c, max_milli_c
                     FROM sensors
                     WHERE device_id = '28-00000020f5ed'
                     """
                 ).fetchone()
 
-        self.assertEqual(row, ("更新後", "water", "outdoor", 0, 0, 20, 100, 18000, 28000))
+        self.assertEqual(
+            row,
+            ("更新後", "更新", "UPDATED", "water", "outdoor", 0, 0, 20, 100, 18000, 28000),
+        )
 
     def test_initialize_migrates_existing_sensors_table(self) -> None:
         with TemporaryDirectory() as tmp_dir:
@@ -104,7 +111,9 @@ class SQLiteStorageTests(unittest.TestCase):
         self.assertIn("enabled", sensor_columns)
         self.assertIn("visible", sensor_columns)
         self.assertIn("sort_order", sensor_columns)
-        self.assertEqual(schema_version, "2")
+        self.assertIn("short_name", sensor_columns)
+        self.assertIn("short_name_ascii", sensor_columns)
+        self.assertEqual(schema_version, "3")
 
     def test_insert_readings_saves_multiple_sensors_and_handles_duplicates(self) -> None:
         with TemporaryDirectory() as tmp_dir:
@@ -305,6 +314,8 @@ def make_config(
     enabled: bool = True,
     visible: bool = True,
     sort_order: int = 10,
+    short_name: str = "増田川",
+    short_name_ascii: str = "MASUDA",
 ) -> AppConfig:
     return AppConfig(
         sensors={
@@ -319,6 +330,8 @@ def make_config(
                 enabled=enabled,
                 visible=visible,
                 sort_order=sort_order,
+                short_name=short_name,
+                short_name_ascii=short_name_ascii,
             )
         }
     )
@@ -349,6 +362,8 @@ def make_reading(
         enabled=True,
         visible=True,
         sort_order=10,
+        short_name="増田川",
+        short_name_ascii="MASUDA",
     )
 
 
