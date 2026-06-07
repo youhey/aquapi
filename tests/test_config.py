@@ -36,6 +36,10 @@ class ConfigTests(unittest.TestCase):
                             "28-00000020f5ed": {
                                 "name": "増田川水槽",
                                 "type": "water",
+                                "role": "aquarium",
+                                "enabled": True,
+                                "visible": True,
+                                "sort_order": 10,
                                 "offset": -0.2,
                                 "min": 18.0,
                                 "max": 28.0,
@@ -54,6 +58,10 @@ class ConfigTests(unittest.TestCase):
         assert sensor_config is not None
         self.assertEqual(sensor_config.name, "増田川水槽")
         self.assertEqual(sensor_config.type, "water")
+        self.assertEqual(sensor_config.role, "aquarium")
+        self.assertTrue(sensor_config.enabled)
+        self.assertTrue(sensor_config.visible)
+        self.assertEqual(sensor_config.sort_order, 10)
         self.assertEqual(sensor_config.offset, -0.2)
         self.assertEqual(sensor_config.min, 18.0)
         self.assertEqual(sensor_config.max, 28.0)
@@ -66,6 +74,50 @@ class ConfigTests(unittest.TestCase):
         self.assertEqual(config.logging.retention_days, 365)
         self.assertTrue(config.weather.enabled)
         self.assertEqual(config.weather.source, "open-meteo")
+
+    def test_load_config_defaults_sensor_display_metadata(self) -> None:
+        with TemporaryDirectory() as tmp_dir:
+            config_path = Path(tmp_dir) / "aquapi.json"
+            config_path.write_text(
+                json.dumps(
+                    {
+                        "sensors": {
+                            "28-water": {
+                                "name": "水槽",
+                                "type": "water",
+                                "offset": 0.0,
+                            },
+                            "28-air": {
+                                "name": "外気",
+                                "type": "air",
+                                "offset": 0.0,
+                            },
+                            "28-unknown": {
+                                "name": "未分類",
+                                "type": "unknown",
+                                "offset": 0.0,
+                            },
+                        }
+                    },
+                    ensure_ascii=False,
+                ),
+                encoding="utf-8",
+            )
+
+            config = load_config(config_path)
+
+        water = config.find_sensor("28-water")
+        air = config.find_sensor("28-air")
+        unknown = config.find_sensor("28-unknown")
+        assert water is not None
+        assert air is not None
+        assert unknown is not None
+        self.assertEqual(water.role, "aquarium")
+        self.assertEqual(air.role, "outdoor")
+        self.assertEqual(unknown.role, "unknown")
+        self.assertTrue(water.enabled)
+        self.assertTrue(water.visible)
+        self.assertEqual(water.sort_order, 1000)
         self.assertEqual(config.weather.latitude, 35.681236)
         self.assertEqual(config.weather.longitude, 139.767125)
         self.assertEqual(config.weather.timezone, "Asia/Tokyo")

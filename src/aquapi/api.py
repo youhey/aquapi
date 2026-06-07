@@ -8,7 +8,7 @@ from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import parse_qs, unquote, urlparse
 
-from aquapi.config import AppConfig
+from aquapi.config import AppConfig, SensorConfig
 from aquapi.logs import RANGE_DELTAS, build_history_summary_payload, build_series_payload
 from aquapi.sensors import (
     ConfiguredSensorReading,
@@ -93,6 +93,9 @@ def handle_api_request(
 
     if path == "/api/weather/summary":
         return _handle_weather_summary(state, params)
+
+    if path == "/api/sensors":
+        return ApiResponse(HTTPStatus.OK, build_sensors_payload(state.config))
 
     if path == "/api/readings":
         return ApiResponse(HTTPStatus.OK, build_readings_payload(state.readings_provider()))
@@ -292,13 +295,16 @@ def _range_bounds(range_text: str) -> tuple[datetime, datetime]:
 def build_readings_payload(readings: list[ConfiguredSensorReading]) -> dict[str, object]:
     return {
         "generated_at": _now_iso(),
-        "sensors": [configured_sensor_reading_to_dict(reading) for reading in readings],
+        "sensors": [
+            configured_sensor_reading_to_dict(reading)
+            for reading in _sort_readings(_visible_readings(readings))
+        ],
     }
 
 
 def build_summary_payload(readings: list[ConfiguredSensorReading]) -> dict[str, object]:
     counts = {status: 0 for status in STATUS_KEYS}
-    for reading in readings:
+    for reading in _visible_readings(readings):
         if reading.status in counts:
             counts[reading.status] += 1
         else:
@@ -320,8 +326,19 @@ def build_sensor_detail_payload(reading: ConfiguredSensorReading) -> dict[str, o
     return {
         "sensor_id": reading.sensor_id,
         "name": reading.name,
+        "type": reading.type,
+        "role": reading.role,
+        "enabled": reading.enabled,
+        "visible": reading.visible,
+        "sort_order": reading.sort_order,
         "temperature_c": reading.temperature_c,
         "status": reading.status,
+    }
+
+
+def build_sensors_payload(config: AppConfig) -> dict[str, object]:
+    return {
+        "sensors": [_sensor_config_to_dict(sensor_config) for sensor_config in _sort_sensor_configs(config)],
     }
 
 
@@ -333,6 +350,36 @@ def find_reading(
         if reading.sensor_id == sensor_id:
             return reading
     return None
+
+
+def _visible_readings(readings: list[ConfiguredSensorReading]) -> list[ConfiguredSensorReading]:
+    return [reading for reading in readings if reading.enabled and reading.visible]
+
+
+def _sort_readings(readings: list[ConfiguredSensorReading]) -> list[ConfiguredSensorReading]:
+    return sorted(readings, key=lambda reading: (reading.sort_order, reading.name, reading.sensor_id))
+
+
+def _sort_sensor_configs(config: AppConfig) -> list[SensorConfig]:
+    return sorted(
+        config.sensors.values(),
+        key=lambda sensor_config: (sensor_config.sort_order, sensor_config.name, sensor_config.sensor_id),
+    )
+
+
+def _sensor_config_to_dict(sensor_config: SensorConfig) -> dict[str, object]:
+    return {
+        "sensor_id": sensor_config.sensor_id,
+        "name": sensor_config.name,
+        "type": sensor_config.type,
+        "role": sensor_config.role,
+        "enabled": sensor_config.enabled,
+        "visible": sensor_config.visible,
+        "sort_order": sensor_config.sort_order,
+        "min": sensor_config.min,
+        "max": sensor_config.max,
+        "offset": sensor_config.offset,
+    }
 
 
 def serve_api(

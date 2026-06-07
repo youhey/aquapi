@@ -12,7 +12,7 @@ from aquapi.sensors import ConfiguredSensorReading
 from aquapi.weather import WeatherHourlyReading
 
 
-SCHEMA_VERSION = "1"
+SCHEMA_VERSION = "2"
 
 
 @dataclass(frozen=True)
@@ -45,6 +45,10 @@ class SQLiteStorage:
                       device_id TEXT NOT NULL UNIQUE,
                       name TEXT NOT NULL,
                       type TEXT NOT NULL,
+                      role TEXT NOT NULL DEFAULT 'unknown',
+                      enabled INTEGER NOT NULL DEFAULT 1,
+                      visible INTEGER NOT NULL DEFAULT 1,
+                      sort_order INTEGER NOT NULL DEFAULT 1000,
                       offset_milli_c INTEGER NOT NULL DEFAULT 0,
                       min_milli_c INTEGER,
                       max_milli_c INTEGER,
@@ -101,6 +105,7 @@ class SQLiteStorage:
                     ON weather_hourly(ts);
                     """
                 )
+                _migrate_sensors_table(conn)
                 conn.execute(
                     """
                     INSERT INTO metadata (key, value)
@@ -121,16 +126,24 @@ class SQLiteStorage:
                       device_id,
                       name,
                       type,
+                      role,
+                      enabled,
+                      visible,
+                      sort_order,
                       offset_milli_c,
                       min_milli_c,
                       max_milli_c,
                       created_at,
                       updated_at
                     )
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     ON CONFLICT(device_id) DO UPDATE SET
                       name = excluded.name,
                       type = excluded.type,
+                      role = excluded.role,
+                      enabled = excluded.enabled,
+                      visible = excluded.visible,
+                      sort_order = excluded.sort_order,
                       offset_milli_c = excluded.offset_milli_c,
                       min_milli_c = excluded.min_milli_c,
                       max_milli_c = excluded.max_milli_c,
@@ -478,12 +491,29 @@ def _sensor_config_row(sensor_config: SensorConfig, now: int) -> tuple[object, .
         sensor_config.sensor_id,
         sensor_config.name,
         sensor_config.type,
+        sensor_config.role,
+        1 if sensor_config.enabled else 0,
+        1 if sensor_config.visible else 0,
+        sensor_config.sort_order,
         _float_c_to_milli(sensor_config.offset) or 0,
         _float_c_to_milli(sensor_config.min),
         _float_c_to_milli(sensor_config.max),
         now,
         now,
     )
+
+
+def _migrate_sensors_table(conn: sqlite3.Connection) -> None:
+    columns = {row["name"] for row in conn.execute("PRAGMA table_info(sensors)").fetchall()}
+    migrations = {
+        "role": "ALTER TABLE sensors ADD COLUMN role TEXT NOT NULL DEFAULT 'unknown'",
+        "enabled": "ALTER TABLE sensors ADD COLUMN enabled INTEGER NOT NULL DEFAULT 1",
+        "visible": "ALTER TABLE sensors ADD COLUMN visible INTEGER NOT NULL DEFAULT 1",
+        "sort_order": "ALTER TABLE sensors ADD COLUMN sort_order INTEGER NOT NULL DEFAULT 1000",
+    }
+    for column, statement in migrations.items():
+        if column not in columns:
+            conn.execute(statement)
 
 
 def _ensure_sensor(conn: sqlite3.Connection, reading: ConfiguredSensorReading, now: int) -> int:
@@ -493,16 +523,24 @@ def _ensure_sensor(conn: sqlite3.Connection, reading: ConfiguredSensorReading, n
           device_id,
           name,
           type,
+          role,
+          enabled,
+          visible,
+          sort_order,
           offset_milli_c,
           min_milli_c,
           max_milli_c,
           created_at,
           updated_at
         )
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         ON CONFLICT(device_id) DO UPDATE SET
           name = excluded.name,
           type = excluded.type,
+          role = excluded.role,
+          enabled = excluded.enabled,
+          visible = excluded.visible,
+          sort_order = excluded.sort_order,
           offset_milli_c = excluded.offset_milli_c,
           min_milli_c = excluded.min_milli_c,
           max_milli_c = excluded.max_milli_c,
@@ -512,6 +550,10 @@ def _ensure_sensor(conn: sqlite3.Connection, reading: ConfiguredSensorReading, n
             reading.sensor_id,
             reading.name,
             reading.type,
+            reading.role,
+            1 if reading.enabled else 0,
+            1 if reading.visible else 0,
+            reading.sort_order,
             _float_c_to_milli(reading.offset) or 0,
             _float_c_to_milli(reading.min),
             _float_c_to_milli(reading.max),

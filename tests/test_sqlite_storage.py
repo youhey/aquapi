@@ -28,30 +28,83 @@ class SQLiteStorageTests(unittest.TestCase):
                 schema_version = conn.execute(
                     "SELECT value FROM metadata WHERE key = 'schema_version'"
                 ).fetchone()[0]
+                sensor_columns = {
+                    row[1] for row in conn.execute("PRAGMA table_info(sensors)").fetchall()
+                }
 
         self.assertIn("sensors", tables)
         self.assertIn("readings", tables)
         self.assertIn("metadata", tables)
         self.assertIn("weather_hourly", tables)
-        self.assertEqual(schema_version, "1")
+        self.assertIn("role", sensor_columns)
+        self.assertIn("enabled", sensor_columns)
+        self.assertIn("visible", sensor_columns)
+        self.assertIn("sort_order", sensor_columns)
+        self.assertEqual(schema_version, "2")
 
     def test_sync_sensors_inserts_and_updates_sensor_config(self) -> None:
         with TemporaryDirectory() as tmp_dir:
             storage = SQLiteStorage(Path(tmp_dir) / "aquapi.sqlite3")
             storage.initialize()
             storage.sync_sensors(make_config(name="増田川水槽", offset=-0.2))
-            storage.sync_sensors(make_config(name="更新後", offset=0.1))
+            storage.sync_sensors(
+                make_config(
+                    name="更新後",
+                    offset=0.1,
+                    role="outdoor",
+                    enabled=False,
+                    visible=False,
+                    sort_order=20,
+                )
+            )
 
             with sqlite3.connect(storage.database_path) as conn:
                 row = conn.execute(
                     """
-                    SELECT name, type, offset_milli_c, min_milli_c, max_milli_c
+                    SELECT name, type, role, enabled, visible, sort_order,
+                           offset_milli_c, min_milli_c, max_milli_c
                     FROM sensors
                     WHERE device_id = '28-00000020f5ed'
                     """
                 ).fetchone()
 
-        self.assertEqual(row, ("更新後", "water", 100, 18000, 28000))
+        self.assertEqual(row, ("更新後", "water", "outdoor", 0, 0, 20, 100, 18000, 28000))
+
+    def test_initialize_migrates_existing_sensors_table(self) -> None:
+        with TemporaryDirectory() as tmp_dir:
+            db_path = Path(tmp_dir) / "aquapi.sqlite3"
+            with sqlite3.connect(db_path) as conn:
+                conn.executescript(
+                    """
+                    CREATE TABLE sensors (
+                      id INTEGER PRIMARY KEY AUTOINCREMENT,
+                      device_id TEXT NOT NULL UNIQUE,
+                      name TEXT NOT NULL,
+                      type TEXT NOT NULL,
+                      offset_milli_c INTEGER NOT NULL DEFAULT 0,
+                      min_milli_c INTEGER,
+                      max_milli_c INTEGER,
+                      created_at INTEGER NOT NULL,
+                      updated_at INTEGER NOT NULL
+                    );
+                    """
+                )
+
+            SQLiteStorage(db_path).initialize()
+
+            with sqlite3.connect(db_path) as conn:
+                sensor_columns = {
+                    row[1] for row in conn.execute("PRAGMA table_info(sensors)").fetchall()
+                }
+                schema_version = conn.execute(
+                    "SELECT value FROM metadata WHERE key = 'schema_version'"
+                ).fetchone()[0]
+
+        self.assertIn("role", sensor_columns)
+        self.assertIn("enabled", sensor_columns)
+        self.assertIn("visible", sensor_columns)
+        self.assertIn("sort_order", sensor_columns)
+        self.assertEqual(schema_version, "2")
 
     def test_insert_readings_saves_multiple_sensors_and_handles_duplicates(self) -> None:
         with TemporaryDirectory() as tmp_dir:
@@ -244,7 +297,15 @@ class SQLiteStorageTests(unittest.TestCase):
         self.assertEqual(summary["precipitation"]["total_mm"], 2.0)
 
 
-def make_config(*, name: str, offset: float) -> AppConfig:
+def make_config(
+    *,
+    name: str,
+    offset: float,
+    role: str = "aquarium",
+    enabled: bool = True,
+    visible: bool = True,
+    sort_order: int = 10,
+) -> AppConfig:
     return AppConfig(
         sensors={
             "28-00000020f5ed": SensorConfig(
@@ -254,6 +315,10 @@ def make_config(*, name: str, offset: float) -> AppConfig:
                 offset=offset,
                 min=18.0,
                 max=28.0,
+                role=role,
+                enabled=enabled,
+                visible=visible,
+                sort_order=sort_order,
             )
         }
     )
@@ -280,6 +345,10 @@ def make_reading(
         crc_ok=crc_ok,
         raw="raw",
         error=None if crc_ok else "CRC チェックが失敗しました",
+        role="aquarium",
+        enabled=True,
+        visible=True,
+        sort_order=10,
     )
 
 

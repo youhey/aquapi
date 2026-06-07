@@ -6,7 +6,7 @@ from http import HTTPStatus
 import unittest
 
 from aquapi.api import ApiState, build_summary_payload, handle_api_request
-from aquapi.config import AppConfig, LoggingConfig
+from aquapi.config import AppConfig, LoggingConfig, SensorConfig
 from aquapi.logs import write_readings
 from aquapi.sqlite_storage import SQLiteStorage
 from aquapi.sensors import ConfiguredSensorReading
@@ -18,6 +18,10 @@ def make_reading(
     *,
     name: str = "増田川水槽",
     status: str = "ok",
+    role: str = "aquarium",
+    enabled: bool = True,
+    visible: bool = True,
+    sort_order: int = 1000,
 ) -> ConfiguredSensorReading:
     return ConfiguredSensorReading(
         sensor_id=sensor_id,
@@ -31,6 +35,10 @@ def make_reading(
         status=status,
         crc_ok=True,
         raw="raw",
+        role=role,
+        enabled=enabled,
+        visible=visible,
+        sort_order=sort_order,
     )
 
 
@@ -44,10 +52,11 @@ class ApiTests(unittest.TestCase):
         self.assertEqual(response.payload["service"], "aquapi")
         self.assertEqual(response.payload["version"], "dev")
 
-    def test_readings_returns_all_sensors(self) -> None:
+    def test_readings_returns_visible_sensors_with_display_metadata_in_sort_order(self) -> None:
         readings = [
-            make_reading("28-00000020f5ed", name="増田川水槽"),
-            make_reading("28-000000224fb6", name="めだか水槽"),
+            make_reading("28-hidden", name="非表示", visible=False, sort_order=5),
+            make_reading("28-second", name="めだか水槽", sort_order=20),
+            make_reading("28-first", name="増田川水槽", sort_order=10),
         ]
 
         response = handle_api_request("/api/readings", make_state(readings))
@@ -58,7 +67,11 @@ class ApiTests(unittest.TestCase):
         self.assertIsInstance(sensors, list)
         self.assertEqual(len(sensors), 2)
         self.assertEqual(sensors[0]["name"], "増田川水槽")
-        self.assertEqual(sensors[1]["sensor_id"], "28-000000224fb6")
+        self.assertEqual(sensors[0]["role"], "aquarium")
+        self.assertTrue(sensors[0]["enabled"])
+        self.assertTrue(sensors[0]["visible"])
+        self.assertEqual(sensors[0]["sort_order"], 10)
+        self.assertEqual(sensors[1]["sensor_id"], "28-second")
 
     def test_summary_returns_status_counts(self) -> None:
         payload = build_summary_payload(
@@ -66,6 +79,7 @@ class ApiTests(unittest.TestCase):
                 make_reading("28-1", status="ok"),
                 make_reading("28-2", status="high"),
                 make_reading("28-3", status="error"),
+                make_reading("28-hidden", status="error", visible=False),
             ]
         )
 
@@ -74,6 +88,45 @@ class ApiTests(unittest.TestCase):
         self.assertEqual(payload["counts"]["error"], 1)
         self.assertEqual(payload["status"], "error")
         self.assertTrue(payload["alert"])
+
+    def test_sensors_returns_configured_sensor_master_in_sort_order(self) -> None:
+        response = handle_api_request(
+            "/api/sensors",
+            make_state(
+                [],
+                sensors={
+                    "28-second": SensorConfig(
+                        sensor_id="28-second",
+                        name="B",
+                        type="water",
+                        offset=0.0,
+                        min=18.0,
+                        max=28.0,
+                        sort_order=20,
+                    ),
+                    "28-first": SensorConfig(
+                        sensor_id="28-first",
+                        name="A",
+                        type="air",
+                        offset=0.1,
+                        min=5.0,
+                        max=35.0,
+                        role="outdoor",
+                        enabled=False,
+                        visible=False,
+                        sort_order=10,
+                    ),
+                },
+            ),
+        )
+
+        self.assertEqual(response.status, HTTPStatus.OK)
+        sensors = response.payload["sensors"]
+        self.assertEqual([sensor["sensor_id"] for sensor in sensors], ["28-first", "28-second"])
+        self.assertEqual(sensors[0]["role"], "outdoor")
+        self.assertFalse(sensors[0]["enabled"])
+        self.assertFalse(sensors[0]["visible"])
+        self.assertEqual(sensors[0]["offset"], 0.1)
 
     def test_sensor_detail_returns_matching_sensor(self) -> None:
         response = handle_api_request("/api/sensors/28-00000020f5ed", make_state([make_reading()]))
@@ -230,12 +283,13 @@ def make_state(
     *,
     logging_config: LoggingConfig | None = None,
     weather_enabled: bool = False,
+    sensors: dict[str, SensorConfig] | None = None,
 ) -> ApiState:
     from aquapi.config import WeatherConfig
 
     return ApiState(
         config=AppConfig(
-            sensors={},
+            sensors=sensors or {},
             logging=logging_config or LoggingConfig(),
             weather=WeatherConfig(enabled=weather_enabled),
         ),

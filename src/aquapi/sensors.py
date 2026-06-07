@@ -37,6 +37,10 @@ class ConfiguredSensorReading:
     crc_ok: bool
     raw: str
     error: str | None = None
+    role: str = "unknown"
+    enabled: bool = True
+    visible: bool = True
+    sort_order: int = 1000
 
 
 def configured_sensor_reading_to_dict(
@@ -46,6 +50,10 @@ def configured_sensor_reading_to_dict(
         "sensor_id": reading.sensor_id,
         "name": reading.name,
         "type": reading.type,
+        "role": reading.role,
+        "enabled": reading.enabled,
+        "visible": reading.visible,
+        "sort_order": reading.sort_order,
         "raw_temperature_c": reading.raw_temperature_c,
         "temperature_c": reading.temperature_c,
         "offset": reading.offset,
@@ -102,6 +110,10 @@ def apply_sensor_config(
             sensor_id=reading.sensor_id,
             name="unknown",
             type="unknown",
+            role="unknown",
+            enabled=True,
+            visible=True,
+            sort_order=1000,
             raw_temperature_c=reading.temperature_c,
             temperature_c=reading.temperature_c,
             offset=0.0,
@@ -118,6 +130,10 @@ def apply_sensor_config(
         sensor_id=reading.sensor_id,
         name=sensor_config.name,
         type=sensor_config.type,
+        role=sensor_config.role,
+        enabled=sensor_config.enabled,
+        visible=sensor_config.visible,
+        sort_order=sensor_config.sort_order,
         raw_temperature_c=reading.temperature_c,
         temperature_c=temperature_c,
         offset=sensor_config.offset,
@@ -137,6 +153,8 @@ def read_all_configured_sensors(
 
     for sensor_path in discover_sensor_paths(base_path):
         sensor_config = config.find_sensor(sensor_path.name) if config is not None else None
+        if sensor_config is not None and not sensor_config.enabled:
+            continue
         try:
             reading = read_sensor(sensor_path)
         except (OSError, SensorReadError, ValueError) as exc:
@@ -164,12 +182,20 @@ def _error_reading(
     if sensor_config is None:
         name = "unknown"
         sensor_type = "unknown"
+        role = "unknown"
+        enabled = True
+        visible = True
+        sort_order = 1000
         offset = 0.0
         min_temperature = None
         max_temperature = None
     else:
         name = sensor_config.name
         sensor_type = sensor_config.type
+        role = sensor_config.role
+        enabled = sensor_config.enabled
+        visible = sensor_config.visible
+        sort_order = sensor_config.sort_order
         offset = sensor_config.offset
         min_temperature = sensor_config.min
         max_temperature = sensor_config.max
@@ -178,6 +204,10 @@ def _error_reading(
         sensor_id=sensor_id,
         name=name,
         type=sensor_type,
+        role=role,
+        enabled=enabled,
+        visible=visible,
+        sort_order=sort_order,
         raw_temperature_c=None,
         temperature_c=None,
         offset=offset,

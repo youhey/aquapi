@@ -73,7 +73,7 @@ cp configs/aquapi.example.json configs/aquapi.json
 
 `configs/aquapi.json` はローカル運用設定として `.gitignore` に含まれています。
 
-センサーIDごとに `name`、`type`、`offset`、`min`、`max` を設定します。
+センサーIDごとに `name`、`type`、`role`、`enabled`、`visible`、`sort_order`、`offset`、`min`、`max` を設定します。
 
 ```json
 {
@@ -100,6 +100,10 @@ cp configs/aquapi.example.json configs/aquapi.json
     "28-00000020f5ed": {
       "name": "増田川水槽",
       "type": "water",
+      "role": "aquarium",
+      "enabled": true,
+      "visible": true,
+      "sort_order": 10,
       "offset": 0.0,
       "min": 18.0,
       "max": 28.0
@@ -111,6 +115,10 @@ cp configs/aquapi.example.json configs/aquapi.json
 `offset` は読み取った生温度に加算されます。例: 生温度 `24.300`、`offset: -0.2` の場合、補正後温度は `24.100 C` です。
 
 `min` 未満は `low`、`max` 超過は `high`、範囲内は `ok` です。設定にないセンサーは `unknown` として表示されます。
+
+`type` は `water` / `air` / `unknown` のような測定対象の物理種別です。`role` は Viewer/API 上の役割で、`aquarium` / `outdoor` / `indoor` / `disabled` / `unknown` を使います。未指定時は `type: "water"` なら `aquarium`、`type: "air"` なら `outdoor`、それ以外は `unknown` です。
+
+`enabled: false` のセンサーは読み取り・ログ保存・API表示から除外します。`visible: false` のセンサーは読み取り・ログ保存は継続しますが、`/api/readings` と `/api/summary` には表示しません。水槽カード表示では `role: "aquarium"` かつ `enabled: true` かつ `visible: true` を表示対象にしてください。`sort_order` は Viewer/API の表示順で、`sort_order ASC`、`name ASC`、`sensor_id ASC` の順に並びます。
 
 API サーバーは `listen_addr` と `listen_port` で待ち受けます。初期ポートは `8080` です。
 
@@ -151,6 +159,10 @@ python -m aquapi.cli read --config configs/aquapi.json --json
       "sensor_id": "28-00000020f5ed",
       "name": "増田川水槽",
       "type": "water",
+      "role": "aquarium",
+      "enabled": true,
+      "visible": true,
+      "sort_order": 10,
       "raw_temperature_c": 23.187,
       "temperature_c": 23.187,
       "offset": 0.0,
@@ -188,6 +200,7 @@ API 一覧:
 - `GET /api/health`
 - `GET /api/readings`
 - `GET /api/summary`
+- `GET /api/sensors`
 - `GET /api/sensors/{sensor_id}`
 - `GET /api/readings/series?sensor_id={sensor_id}&range=24h`
 - `GET /api/readings/summary?range=24h`
@@ -201,11 +214,14 @@ curl 例:
 curl http://aquapi.local:8080/api/health
 curl http://aquapi.local:8080/api/readings
 curl http://aquapi.local:8080/api/summary
+curl http://aquapi.local:8080/api/sensors
 curl http://aquapi.local:8080/api/sensors/28-00000020f5ed
 curl http://aquapi.local:8080/api/weather/latest
 ```
 
 存在しないセンサーIDは JSON エラー付きで 404 を返します。
+
+`/api/readings` の各 sensor item には `role`、`enabled`、`visible`、`sort_order` が含まれます。`/api/sensors` は設定ファイル上のセンサーマスタを返し、Viewer が表示順や分類を判断するために使えます。
 
 ## ログ保存
 
@@ -257,7 +273,7 @@ Saved 48 hourly weather records to /var/lib/aquapi/aquapi.sqlite3
 python -m aquapi.cli weather-collect --config configs/aquapi.json
 ```
 
-SQLite には `sensors`、`readings`、`metadata`、`weather_hourly` テーブルを作成します。水温は `23.187 C` を `23187` のようにミリ℃の整数として保存します。60秒間隔、5センサー、1年保存でも約 2,628,000 readings なので SQLite で現実的に扱えます。
+SQLite には `sensors`、`readings`、`metadata`、`weather_hourly` テーブルを作成します。`sensors` には `role`、`enabled`、`visible`、`sort_order` も保存します。水温は `23.187 C` を `23187` のようにミリ℃の整数として保存します。60秒間隔、5センサー、1年保存でも約 2,628,000 readings なので SQLite で現実的に扱えます。
 
 DB ファイルは Git 管理しません。`*.sqlite`、`*.sqlite3`、`*.db`、`data/` は `.gitignore` に含まれています。
 

@@ -92,6 +92,10 @@ class SensorTests(unittest.TestCase):
         self.assertAlmostEqual(configured.temperature_c, 22.987)
         self.assertEqual(configured.offset, -0.2)
         self.assertEqual(configured.status, "ok")
+        self.assertEqual(configured.role, "aquarium")
+        self.assertTrue(configured.enabled)
+        self.assertTrue(configured.visible)
+        self.assertEqual(configured.sort_order, 1000)
 
     def test_apply_sensor_config_returns_low_status(self) -> None:
         with TemporaryDirectory() as tmp_dir:
@@ -164,6 +168,38 @@ class SensorTests(unittest.TestCase):
         self.assertEqual(readings[0].name, "めだか水槽")
         self.assertEqual(readings[0].status, "error")
         self.assertFalse(readings[0].crc_ok)
+
+    def test_read_all_configured_sensors_skips_disabled_sensor(self) -> None:
+        with TemporaryDirectory() as tmp_dir:
+            tmp_path = Path(tmp_dir)
+            write_sensor(tmp_path, "28-enabled", VALID_W1_SLAVE)
+            write_sensor(tmp_path, "28-disabled", VALID_W1_SLAVE)
+            config = AppConfig(
+                sensors={
+                    "28-enabled": SensorConfig(
+                        sensor_id="28-enabled",
+                        name="有効",
+                        type="water",
+                        offset=0.0,
+                        min=18.0,
+                        max=28.0,
+                        sort_order=10,
+                    ),
+                    "28-disabled": SensorConfig(
+                        sensor_id="28-disabled",
+                        name="無効",
+                        type="water",
+                        offset=0.0,
+                        min=18.0,
+                        max=28.0,
+                        enabled=False,
+                    ),
+                }
+            )
+
+            readings = read_all_configured_sensors(tmp_path, config)
+
+        self.assertEqual([reading.sensor_id for reading in readings], ["28-enabled"])
 
 
 if __name__ == "__main__":

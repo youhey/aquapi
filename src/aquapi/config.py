@@ -14,6 +14,14 @@ class SensorConfig:
     offset: float
     min: float | None
     max: float | None
+    role: str = ""
+    enabled: bool = True
+    visible: bool = True
+    sort_order: int = 1000
+
+    def __post_init__(self) -> None:
+        if self.role == "":
+            object.__setattr__(self, "role", default_sensor_role(self.type))
 
 
 @dataclass(frozen=True)
@@ -74,6 +82,10 @@ def load_config(path: Path) -> AppConfig:
             offset=_optional_float(raw_config, "offset", sensor_id, default=0.0),
             min=_optional_float(raw_config, "min", sensor_id),
             max=_optional_float(raw_config, "max", sensor_id),
+            role=_optional_role(raw_config, "role", default=default_sensor_role(raw_config.get("type"))),
+            enabled=_optional_bool(raw_config, "enabled", default=True),
+            visible=_optional_bool(raw_config, "visible", default=True),
+            sort_order=_optional_sort_order(raw_config, "sort_order", default=1000),
         )
 
     return AppConfig(
@@ -162,6 +174,28 @@ def _optional_weather_source(data: dict[str, Any], key: str, *, default: str) ->
     if value != "open-meteo":
         raise ValueError(f"{key} は open-meteo である必要があります")
     return value
+
+
+def _optional_role(data: dict[str, Any], key: str, *, default: str) -> str:
+    value = _optional_str(data, key, default=default)
+    if value not in {"aquarium", "outdoor", "indoor", "disabled", "unknown"}:
+        raise ValueError(f"{key} は aquarium, outdoor, indoor, disabled, unknown のいずれかである必要があります")
+    return value
+
+
+def _optional_sort_order(data: dict[str, Any], key: str, *, default: int) -> int:
+    value = data.get(key, default)
+    if isinstance(value, bool) or not isinstance(value, int):
+        raise ValueError(f"{key} は整数である必要があります")
+    return value
+
+
+def default_sensor_role(sensor_type: object) -> str:
+    if sensor_type == "water":
+        return "aquarium"
+    if sensor_type == "air":
+        return "outdoor"
+    return "unknown"
 
 
 def _optional_number(data: dict[str, Any], key: str, *, default: float) -> float:

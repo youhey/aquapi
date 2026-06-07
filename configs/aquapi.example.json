@@ -22,6 +22,10 @@
     "28-00000020f5ed": {
       "name": "増田川水槽",
       "type": "water",
+      "role": "aquarium",
+      "enabled": true,
+      "visible": true,
+      "sort_order": 10,
       "offset": 0.0,
       "min": 18.0,
       "max": 28.0
@@ -29,6 +33,10 @@
     "28-000000224fb6": {
       "name": "めだか水槽",
       "type": "water",
+      "role": "aquarium",
+      "enabled": true,
+      "visible": true,
+      "sort_order": 20,
       "offset": 0.0,
       "min": 18.0,
       "max": 28.0
@@ -36,6 +44,10 @@
     "28-000000230ee6": {
       "name": "ミニ水槽",
       "type": "water",
+      "role": "aquarium",
+      "enabled": true,
+      "visible": true,
+      "sort_order": 30,
       "offset": 0.0,
       "min": 18.0,
       "max": 28.0
@@ -43,6 +55,10 @@
     "28-000000235d5e": {
       "name": "金魚水槽",
       "type": "water",
+      "role": "aquarium",
+      "enabled": true,
+      "visible": true,
+      "sort_order": 40,
       "offset": 0.0,
       "min": 15.0,
       "max": 30.0
@@ -50,6 +66,10 @@
     "28-00000023733a": {
       "name": "外気",
       "type": "air",
+      "role": "outdoor",
+      "enabled": true,
+      "visible": true,
+      "sort_order": 100,
       "offset": 0.0,
       "min": 5.0,
       "max": 35.0
