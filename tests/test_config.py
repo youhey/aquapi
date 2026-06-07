@@ -35,6 +35,7 @@ class ConfigTests(unittest.TestCase):
                         "sensors": {
                             "28-00000020f5ed": {
                                 "name": "増田川水槽",
+                                "short_name": "増田川",
                                 "type": "water",
                                 "role": "aquarium",
                                 "enabled": True,
@@ -57,6 +58,7 @@ class ConfigTests(unittest.TestCase):
         self.assertIsNotNone(sensor_config)
         assert sensor_config is not None
         self.assertEqual(sensor_config.name, "増田川水槽")
+        self.assertEqual(sensor_config.short_name, "増田川")
         self.assertEqual(sensor_config.type, "water")
         self.assertEqual(sensor_config.role, "aquarium")
         self.assertTrue(sensor_config.enabled)
@@ -113,8 +115,11 @@ class ConfigTests(unittest.TestCase):
         assert air is not None
         assert unknown is not None
         self.assertEqual(water.role, "aquarium")
+        self.assertEqual(water.short_name, "水槽")
         self.assertEqual(air.role, "outdoor")
+        self.assertEqual(air.short_name, "外気")
         self.assertEqual(unknown.role, "unknown")
+        self.assertEqual(unknown.short_name, "未分類")
         self.assertTrue(water.enabled)
         self.assertTrue(water.visible)
         self.assertEqual(water.sort_order, 1000)

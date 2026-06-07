@@ -20,6 +20,12 @@ from aquapi.sqlite_storage import SQLiteStorage
 
 ReadingsProvider = Callable[[], list[ConfiguredSensorReading]]
 STATUS_KEYS = ("ok", "low", "high", "unknown", "error")
+COMPACT_STATUS_PRIORITY = {
+    "danger": 3,
+    "warning": 2,
+    "unknown": 1,
+    "safety": 0,
+}
 
 
 @dataclass(frozen=True)
@@ -93,6 +99,9 @@ def handle_api_request(
 
     if path == "/api/weather/summary":
         return _handle_weather_summary(state, params)
+
+    if path == "/api/monitoring/compact":
+        return _handle_monitoring_compact(state)
 
     if path == "/api/sensors":
         return ApiResponse(HTTPStatus.OK, build_sensors_payload(state.config))
@@ -193,6 +202,24 @@ def _range_error(exc: ValueError) -> ApiResponse:
             }
         },
     )
+
+
+def _handle_monitoring_compact(state: ApiState) -> ApiResponse:
+    try:
+        readings = state.readings_provider()
+        payload = build_monitoring_compact_payload(readings)
+    except Exception as exc:
+        return ApiResponse(
+            HTTPStatus.INTERNAL_SERVER_ERROR,
+            {
+                "error": {
+                    "code": "monitoring_compact_failed",
+                    "message": str(exc),
+                }
+            },
+        )
+
+    return ApiResponse(HTTPStatus.OK, payload)
 
 
 def _handle_weather_latest(state: ApiState) -> ApiResponse:
@@ -342,6 +369,37 @@ def build_sensors_payload(config: AppConfig) -> dict[str, object]:
     }
 
 
+def build_monitoring_compact_payload(readings: list[ConfiguredSensorReading]) -> dict[str, object]:
+    tanks = [_compact_tank(reading) for reading in _sort_readings(_compact_aquarium_readings(readings))]
+    if not tanks:
+        return {
+            "source": "aquapi",
+            "generated_at": _now_iso(),
+            "level": "unknown",
+            "label": "UNK",
+            "alert": False,
+            "title": "No aquariums configured",
+            "message": "No visible aquarium sensors are configured.",
+            "issue_count": 0,
+            "tanks": [],
+        }
+
+    level = _compact_level([str(tank["status"]) for tank in tanks])
+    issue_count = sum(1 for tank in tanks if tank["status"] in {"warning", "danger", "unknown"})
+    title, message = _compact_title_message(level, _compact_message_count(level, tanks))
+    return {
+        "source": "aquapi",
+        "generated_at": _now_iso(),
+        "level": level,
+        "label": _compact_label(level),
+        "alert": level != "ok",
+        "title": title,
+        "message": message,
+        "issue_count": issue_count,
+        "tanks": tanks,
+    }
+
+
 def find_reading(
     readings: list[ConfiguredSensorReading],
     sensor_id: str,
@@ -350,6 +408,103 @@ def find_reading(
         if reading.sensor_id == sensor_id:
             return reading
     return None
+
+
+def _compact_aquarium_readings(readings: list[ConfiguredSensorReading]) -> list[ConfiguredSensorReading]:
+    return [
+        reading
+        for reading in readings
+        if reading.role == "aquarium" and reading.enabled and reading.visible
+    ]
+
+
+def _compact_tank(reading: ConfiguredSensorReading) -> dict[str, object]:
+    status = _compact_status(reading)
+    return {
+        "sensor_id": reading.sensor_id,
+        "name": reading.name,
+        "short_name": reading.short_name,
+        "temperature_c": reading.temperature_c,
+        "status": status,
+        "alert": status in {"warning", "danger", "unknown"},
+    }
+
+
+def _compact_status(reading: ConfiguredSensorReading) -> str:
+    if (
+        reading.temperature_c is None
+        or reading.min is None
+        or reading.max is None
+        or not reading.crc_ok
+        or reading.error is not None
+        or reading.min > reading.max
+    ):
+        return "unknown"
+
+    temperature = reading.temperature_c
+    if reading.min <= temperature <= reading.max:
+        return "safety"
+    if reading.min - 2.0 <= temperature < reading.min:
+        return "warning"
+    if reading.max < temperature <= reading.max + 2.0:
+        return "warning"
+    return "danger"
+
+
+def _compact_level(statuses: list[str]) -> str:
+    highest = max(statuses, key=lambda status: COMPACT_STATUS_PRIORITY.get(status, 0))
+    if highest == "danger":
+        return "critical"
+    if highest == "warning":
+        return "warning"
+    if highest == "unknown":
+        return "unknown"
+    return "ok"
+
+
+def _compact_label(level: str) -> str:
+    return {
+        "ok": "AQUA OK",
+        "warning": "WARN",
+        "critical": "DANGER",
+        "unknown": "UNK",
+    }[level]
+
+
+def _compact_title_message(level: str, issue_count: int) -> tuple[str, str]:
+    if level == "ok":
+        return (
+            "All aquariums are safe",
+            "All aquarium temperatures are within safety range.",
+        )
+    if level == "warning":
+        return (
+            "Aquarium temperature warning",
+            _issue_message(issue_count, "outside the safety range"),
+        )
+    if level == "critical":
+        return (
+            "Dangerous aquarium temperature",
+            _issue_message(issue_count, "outside the danger threshold"),
+        )
+    return (
+        "Aquarium status unavailable",
+        "AquaPi cannot determine current aquarium temperature status.",
+    )
+
+
+def _compact_message_count(level: str, tanks: list[dict[str, object]]) -> int:
+    if level == "critical":
+        return sum(1 for tank in tanks if tank["status"] == "danger")
+    if level == "warning":
+        return sum(1 for tank in tanks if tank["status"] == "warning")
+    return sum(1 for tank in tanks if tank["status"] == "unknown")
+
+
+def _issue_message(issue_count: int, suffix: str) -> str:
+    if issue_count == 1:
+        return f"1 aquarium is {suffix}."
+    return f"{issue_count} aquariums are {suffix}."
 
 
 def _visible_readings(readings: list[ConfiguredSensorReading]) -> list[ConfiguredSensorReading]:
@@ -376,6 +531,7 @@ def _sensor_config_to_dict(sensor_config: SensorConfig) -> dict[str, object]:
         "enabled": sensor_config.enabled,
         "visible": sensor_config.visible,
         "sort_order": sensor_config.sort_order,
+        "short_name": sensor_config.short_name,
         "min": sensor_config.min,
         "max": sensor_config.max,
         "offset": sensor_config.offset,

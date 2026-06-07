@@ -22,23 +22,32 @@ def make_reading(
     enabled: bool = True,
     visible: bool = True,
     sort_order: int = 1000,
+    short_name: str = "増田川",
+    sensor_type: str = "water",
+    temperature_c: float | None = 23.187,
+    min_temperature: float | None = 18.0,
+    max_temperature: float | None = 28.0,
+    crc_ok: bool = True,
+    error: str | None = None,
 ) -> ConfiguredSensorReading:
     return ConfiguredSensorReading(
         sensor_id=sensor_id,
         name=name,
-        type="water",
-        raw_temperature_c=23.187,
-        temperature_c=23.187,
+        type=sensor_type,
+        raw_temperature_c=temperature_c,
+        temperature_c=temperature_c,
         offset=0.0,
-        min=18.0,
-        max=28.0,
+        min=min_temperature,
+        max=max_temperature,
         status=status,
-        crc_ok=True,
+        crc_ok=crc_ok,
         raw="raw",
+        error=error,
         role=role,
         enabled=enabled,
         visible=visible,
         sort_order=sort_order,
+        short_name=short_name,
     )
 
 
@@ -127,6 +136,157 @@ class ApiTests(unittest.TestCase):
         self.assertFalse(sensors[0]["enabled"])
         self.assertFalse(sensors[0]["visible"])
         self.assertEqual(sensors[0]["offset"], 0.1)
+        self.assertEqual(sensors[0]["short_name"], "A")
+
+    def test_monitoring_compact_returns_ok_for_safe_aquariums(self) -> None:
+        response = handle_api_request(
+            "/api/monitoring/compact",
+            make_state(
+                [
+                    make_reading(
+                        "28-second",
+                        name="めだか水槽",
+                        short_name="めだか",
+                        temperature_c=21.4,
+                        sort_order=20,
+                    ),
+                    make_reading(
+                        "28-first",
+                        name="増田川水槽",
+                        short_name="増田川",
+                        temperature_c=21.4,
+                        sort_order=10,
+                    ),
+                ]
+            ),
+        )
+
+        self.assertEqual(response.status, HTTPStatus.OK)
+        self.assertEqual(response.payload["level"], "ok")
+        self.assertEqual(response.payload["label"], "AQUA OK")
+        self.assertFalse(response.payload["alert"])
+        self.assertEqual(response.payload["issue_count"], 0)
+        tanks = response.payload["tanks"]
+        self.assertEqual([tank["sensor_id"] for tank in tanks], ["28-first", "28-second"])
+        self.assertEqual(tanks[0]["short_name"], "増田川")
+        self.assertEqual(tanks[0]["temperature_c"], 21.4)
+        self.assertEqual(tanks[0]["status"], "safety")
+        self.assertFalse(tanks[0]["alert"])
+
+    def test_monitoring_compact_warns_for_small_range_deviation(self) -> None:
+        response = handle_api_request(
+            "/api/monitoring/compact",
+            make_state([make_reading(temperature_c=29.2, max_temperature=28.0)]),
+        )
+
+        self.assertEqual(response.status, HTTPStatus.OK)
+        self.assertEqual(response.payload["level"], "warning")
+        self.assertEqual(response.payload["label"], "WARN")
+        self.assertEqual(response.payload["issue_count"], 1)
+        self.assertEqual(response.payload["tanks"][0]["status"], "warning")
+        self.assertTrue(response.payload["tanks"][0]["alert"])
+
+    def test_monitoring_compact_warns_for_small_low_deviation(self) -> None:
+        response = handle_api_request(
+            "/api/monitoring/compact",
+            make_state([make_reading(temperature_c=16.5, min_temperature=18.0)]),
+        )
+
+        self.assertEqual(response.payload["level"], "warning")
+        self.assertEqual(response.payload["tanks"][0]["status"], "warning")
+
+    def test_monitoring_compact_marks_large_deviation_as_critical(self) -> None:
+        response = handle_api_request(
+            "/api/monitoring/compact",
+            make_state([make_reading(temperature_c=31.1, max_temperature=28.0)]),
+        )
+
+        self.assertEqual(response.status, HTTPStatus.OK)
+        self.assertEqual(response.payload["level"], "critical")
+        self.assertEqual(response.payload["label"], "DANGER")
+        self.assertEqual(response.payload["title"], "Dangerous aquarium temperature")
+        self.assertEqual(response.payload["tanks"][0]["status"], "danger")
+
+    def test_monitoring_compact_marks_large_low_deviation_as_critical(self) -> None:
+        response = handle_api_request(
+            "/api/monitoring/compact",
+            make_state([make_reading(temperature_c=15.9, min_temperature=18.0)]),
+        )
+
+        self.assertEqual(response.payload["level"], "critical")
+        self.assertEqual(response.payload["tanks"][0]["status"], "danger")
+
+    def test_monitoring_compact_returns_unknown_for_unavailable_status(self) -> None:
+        cases = [
+            make_reading("28-temp", temperature_c=None),
+            make_reading("28-min", min_temperature=None),
+            make_reading("28-max", max_temperature=None),
+            make_reading("28-crc", crc_ok=False),
+            make_reading("28-error", error="CRC チェックが失敗しました"),
+        ]
+
+        for reading in cases:
+            response = handle_api_request("/api/monitoring/compact", make_state([reading]))
+            self.assertEqual(response.payload["level"], "unknown")
+            self.assertEqual(response.payload["label"], "UNK")
+            self.assertEqual(response.payload["issue_count"], 1)
+            self.assertEqual(response.payload["tanks"][0]["status"], "unknown")
+
+    def test_monitoring_compact_prefers_danger_over_warning(self) -> None:
+        response = handle_api_request(
+            "/api/monitoring/compact",
+            make_state(
+                [
+                    make_reading("28-warning", temperature_c=29.2),
+                    make_reading("28-danger", temperature_c=31.1),
+                ]
+            ),
+        )
+
+        self.assertEqual(response.payload["level"], "critical")
+        self.assertEqual(response.payload["issue_count"], 2)
+        self.assertEqual(response.payload["message"], "1 aquarium is outside the danger threshold.")
+
+    def test_monitoring_compact_filters_non_visible_aquariums(self) -> None:
+        response = handle_api_request(
+            "/api/monitoring/compact",
+            make_state(
+                [
+                    make_reading("28-outdoor", role="outdoor", sensor_type="air"),
+                    make_reading("28-disabled", enabled=False),
+                    make_reading("28-hidden", visible=False),
+                    make_reading("28-aquarium", short_name="水槽", sort_order=10),
+                ]
+            ),
+        )
+
+        tanks = response.payload["tanks"]
+        self.assertEqual([tank["sensor_id"] for tank in tanks], ["28-aquarium"])
+
+    def test_monitoring_compact_returns_empty_unknown_when_no_aquariums(self) -> None:
+        response = handle_api_request(
+            "/api/monitoring/compact",
+            make_state([make_reading("28-outdoor", role="outdoor", sensor_type="air")]),
+        )
+
+        self.assertEqual(response.status, HTTPStatus.OK)
+        self.assertEqual(response.payload["level"], "unknown")
+        self.assertEqual(response.payload["label"], "UNK")
+        self.assertFalse(response.payload["alert"])
+        self.assertEqual(response.payload["issue_count"], 0)
+        self.assertEqual(response.payload["title"], "No aquariums configured")
+        self.assertEqual(response.payload["tanks"], [])
+
+    def test_monitoring_compact_returns_500_for_provider_error(self) -> None:
+        state = ApiState(
+            config=AppConfig(sensors={}),
+            readings_provider=lambda: (_ for _ in ()).throw(RuntimeError("sensor failure")),
+        )
+
+        response = handle_api_request("/api/monitoring/compact", state)
+
+        self.assertEqual(response.status, HTTPStatus.INTERNAL_SERVER_ERROR)
+        self.assertEqual(response.payload["error"]["code"], "monitoring_compact_failed")
 
     def test_sensor_detail_returns_matching_sensor(self) -> None:
         response = handle_api_request("/api/sensors/28-00000020f5ed", make_state([make_reading()]))

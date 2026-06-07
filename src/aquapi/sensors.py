@@ -41,6 +41,7 @@ class ConfiguredSensorReading:
     enabled: bool = True
     visible: bool = True
     sort_order: int = 1000
+    short_name: str = ""
 
 
 def configured_sensor_reading_to_dict(
@@ -54,6 +55,7 @@ def configured_sensor_reading_to_dict(
         "enabled": reading.enabled,
         "visible": reading.visible,
         "sort_order": reading.sort_order,
+        "short_name": reading.short_name,
         "raw_temperature_c": reading.raw_temperature_c,
         "temperature_c": reading.temperature_c,
         "offset": reading.offset,
@@ -114,6 +116,7 @@ def apply_sensor_config(
             enabled=True,
             visible=True,
             sort_order=1000,
+            short_name="unknown",
             raw_temperature_c=reading.temperature_c,
             temperature_c=reading.temperature_c,
             offset=0.0,
@@ -134,6 +137,7 @@ def apply_sensor_config(
         enabled=sensor_config.enabled,
         visible=sensor_config.visible,
         sort_order=sensor_config.sort_order,
+        short_name=sensor_config.short_name,
         raw_temperature_c=reading.temperature_c,
         temperature_c=temperature_c,
         offset=sensor_config.offset,
@@ -186,6 +190,7 @@ def _error_reading(
         enabled = True
         visible = True
         sort_order = 1000
+        short_name = "unknown"
         offset = 0.0
         min_temperature = None
         max_temperature = None
@@ -196,6 +201,7 @@ def _error_reading(
         enabled = sensor_config.enabled
         visible = sensor_config.visible
         sort_order = sensor_config.sort_order
+        short_name = sensor_config.short_name
         offset = sensor_config.offset
         min_temperature = sensor_config.min
         max_temperature = sensor_config.max
@@ -208,6 +214,7 @@ def _error_reading(
         enabled=enabled,
         visible=visible,
         sort_order=sort_order,
+        short_name=short_name,
         raw_temperature_c=None,
         temperature_c=None,
         offset=offset,

@@ -21,6 +21,7 @@
   "sensors": {
     "28-00000020f5ed": {
       "name": "増田川水槽",
+      "short_name": "増田川",
       "type": "water",
       "role": "aquarium",
       "enabled": true,
@@ -32,6 +33,7 @@
     },
     "28-000000224fb6": {
       "name": "めだか水槽",
+      "short_name": "めだか",
       "type": "water",
       "role": "aquarium",
       "enabled": true,
@@ -43,6 +45,7 @@
     },
     "28-000000230ee6": {
       "name": "ミニ水槽",
+      "short_name": "ミニ",
       "type": "water",
       "role": "aquarium",
       "enabled": true,
@@ -54,6 +57,7 @@
     },
     "28-000000235d5e": {
       "name": "金魚水槽",
+      "short_name": "金魚",
       "type": "water",
       "role": "aquarium",
       "enabled": true,
@@ -65,6 +69,7 @@
     },
     "28-00000023733a": {
       "name": "外気",
+      "short_name": "外気",
       "type": "air",
       "role": "outdoor",
       "enabled": true,

@@ -73,7 +73,7 @@ cp configs/aquapi.example.json configs/aquapi.json
 
 `configs/aquapi.json` はローカル運用設定として `.gitignore` に含まれています。
 
-センサーIDごとに `name`、`type`、`role`、`enabled`、`visible`、`sort_order`、`offset`、`min`、`max` を設定します。
+センサーIDごとに `name`、`short_name`、`type`、`role`、`enabled`、`visible`、`sort_order`、`offset`、`min`、`max` を設定します。
 
 ```json
 {
@@ -99,6 +99,7 @@ cp configs/aquapi.example.json configs/aquapi.json
   "sensors": {
     "28-00000020f5ed": {
       "name": "増田川水槽",
+      "short_name": "増田川",
       "type": "water",
       "role": "aquarium",
       "enabled": true,
@@ -119,6 +120,8 @@ cp configs/aquapi.example.json configs/aquapi.json
 `type` は `water` / `air` / `unknown` のような測定対象の物理種別です。`role` は Viewer/API 上の役割で、`aquarium` / `outdoor` / `indoor` / `disabled` / `unknown` を使います。未指定時は `type: "water"` なら `aquarium`、`type: "air"` なら `outdoor`、それ以外は `unknown` です。
 
 `enabled: false` のセンサーは読み取り・ログ保存・API表示から除外します。`visible: false` のセンサーは読み取り・ログ保存は継続しますが、`/api/readings` と `/api/summary` には表示しません。水槽カード表示では `role: "aquarium"` かつ `enabled: true` かつ `visible: true` を表示対象にしてください。`sort_order` は Viewer/API の表示順で、`sort_order ASC`、`name ASC`、`sensor_id ASC` の順に並びます。
+
+`short_name` は M5Stack などの小さい画面向けの短い表示名です。未指定時は `name` 末尾の `水槽` を除いた文字列を使い、除去後に空になる場合は `name` をそのまま使います。
 
 API サーバーは `listen_addr` と `listen_port` で待ち受けます。初期ポートは `8080` です。
 
@@ -158,6 +161,7 @@ python -m aquapi.cli read --config configs/aquapi.json --json
     {
       "sensor_id": "28-00000020f5ed",
       "name": "増田川水槽",
+      "short_name": "増田川",
       "type": "water",
       "role": "aquarium",
       "enabled": true,
@@ -202,6 +206,7 @@ API 一覧:
 - `GET /api/summary`
 - `GET /api/sensors`
 - `GET /api/sensors/{sensor_id}`
+- `GET /api/monitoring/compact`
 - `GET /api/readings/series?sensor_id={sensor_id}&range=24h`
 - `GET /api/readings/summary?range=24h`
 - `GET /api/weather/latest`
@@ -216,12 +221,46 @@ curl http://aquapi.local:8080/api/readings
 curl http://aquapi.local:8080/api/summary
 curl http://aquapi.local:8080/api/sensors
 curl http://aquapi.local:8080/api/sensors/28-00000020f5ed
+curl http://aquapi.local:8080/api/monitoring/compact
 curl http://aquapi.local:8080/api/weather/latest
 ```
 
 存在しないセンサーIDは JSON エラー付きで 404 を返します。
 
 `/api/readings` の各 sensor item には `role`、`enabled`、`visible`、`sort_order` が含まれます。`/api/sensors` は設定ファイル上のセンサーマスタを返し、Viewer が表示順や分類を判断するために使えます。
+
+`/api/monitoring/compact` は M5Stack / Widget / 小型表示端末向けの軽量 API です。複数 API を組み合わせず、この API だけで水槽の最低限の状態を表示できます。対象は `role: "aquarium"`、`enabled: true`、`visible: true` のセンサーだけです。
+
+compact API の全体 `level` / `label`:
+
+- `ok` -> `AQUA OK`
+- `warning` -> `WARN`
+- `critical` -> `DANGER`
+- `unknown` -> `UNK`
+
+水槽ごとの `status` は `temperature_c` と `min` / `max` から判定します。範囲内は `safety`、範囲外かつ ±2.0℃以内は `warning`、±2.0℃を超える逸脱は `danger` です。温度がない、`min` / `max` がない、CRC 失敗、読み取りエラーの場合は `unknown` です。
+
+M5Stack 表示例:
+
+```text
+AQUA OK
+
+増田川 21.4 SAFE
+めだか 21.4 SAFE
+ミニ   21.4 SAFE
+金魚   21.4 SAFE
+```
+
+異常時:
+
+```text
+DANGER
+
+ミニ   31.1 DANGER
+増田川 21.4 SAFE
+めだか 21.4 SAFE
+金魚   21.4 SAFE
+```
 
 ## ログ保存
 
