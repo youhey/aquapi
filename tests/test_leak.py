@@ -69,6 +69,20 @@ class LeakTests(unittest.TestCase):
         self.assertIsNone(reading.raw_value)
         self.assertEqual(reading.error, "gpio unavailable")
 
+    def test_read_leak_sensor_catches_gpio_library_custom_exception(self) -> None:
+        sensor_config = make_leak_config()
+
+        class GpioBusyError(Exception):
+            pass
+
+        with patch("aquapi.leak.read_leak_raw_gpio", side_effect=GpioBusyError("GPIO busy")):
+            reading = read_leak_sensor(sensor_config, state_store=LeakStateStore())
+
+        self.assertEqual(reading.status, "unknown")
+        self.assertFalse(reading.alert)
+        self.assertIsNone(reading.raw_value)
+        self.assertEqual(reading.error, "GPIO busy")
+
     def test_disabled_leak_sensor_is_not_read(self) -> None:
         config = AppConfig(
             sensors={},

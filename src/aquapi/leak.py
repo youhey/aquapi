@@ -82,7 +82,7 @@ def read_leak_sensor(
 
     try:
         raw_value = read_leak_raw_gpio(sensor_config)
-    except (ImportError, OSError, RuntimeError) as exc:
+    except Exception as exc:
         print(
             f"WARN  leak sensor read failed: sensor={sensor_config.sensor_key} error={exc}",
             file=sys.stderr,
