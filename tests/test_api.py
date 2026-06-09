@@ -8,6 +8,7 @@ import unittest
 from aquapi.api import ApiState, build_summary_payload, handle_api_request
 from aquapi.config import AppConfig, EnvironmentSensorConfig, LoggingConfig, SensorConfig
 from aquapi.environment import EnvironmentReading
+from aquapi.leak import LeakReading
 from aquapi.logs import write_readings
 from aquapi.sqlite_storage import SQLiteStorage
 from aquapi.sensors import ConfiguredSensorReading
@@ -562,6 +563,73 @@ class ApiTests(unittest.TestCase):
         self.assertEqual(response.payload["environment"]["temperature_c"], 25.0)
         self.assertEqual(response.payload["environment"]["relative_humidity_percent"], 56.0)
 
+    def test_leak_latest_returns_dry_without_alert(self) -> None:
+        response = handle_api_request(
+            "/api/leak/latest",
+            make_state([], leak_readings=[make_leak_reading(status="dry", raw_value=0)]),
+        )
+
+        self.assertEqual(response.status, HTTPStatus.OK)
+        sensor = response.payload["sensors"][0]
+        self.assertEqual(sensor["sensor_key"], "leak_main")
+        self.assertEqual(sensor["status"], "dry")
+        self.assertFalse(sensor["alert"])
+        self.assertEqual(sensor["raw_value"], 0)
+
+    def test_leak_latest_returns_wet_with_alert(self) -> None:
+        response = handle_api_request(
+            "/api/leak/latest",
+            make_state([], leak_readings=[make_leak_reading(status="wet", raw_value=1)]),
+        )
+
+        self.assertEqual(response.status, HTTPStatus.OK)
+        sensor = response.payload["sensors"][0]
+        self.assertEqual(sensor["status"], "wet")
+        self.assertTrue(sensor["alert"])
+
+    def test_leak_latest_returns_unknown_definition_when_read_fails(self) -> None:
+        response = handle_api_request(
+            "/api/leak/latest",
+            make_state([], leak_sensors=make_leak_sensors(), leak_provider_raises=True),
+        )
+
+        self.assertEqual(response.status, HTTPStatus.OK)
+        sensor = response.payload["sensors"][0]
+        self.assertEqual(sensor["sensor_key"], "leak_main")
+        self.assertEqual(sensor["status"], "unknown")
+        self.assertFalse(sensor["alert"])
+        self.assertIsNone(sensor["measured_at"])
+
+    def test_leak_latest_returns_empty_without_config(self) -> None:
+        response = handle_api_request("/api/leak/latest", make_state([]))
+
+        self.assertEqual(response.status, HTTPStatus.OK)
+        self.assertEqual(response.payload["sensors"], [])
+
+    def test_summary_includes_leak_status(self) -> None:
+        response = handle_api_request(
+            "/api/summary",
+            make_state([make_reading()], leak_readings=[make_leak_reading(status="dry", raw_value=0)]),
+        )
+
+        self.assertEqual(response.status, HTTPStatus.OK)
+        self.assertEqual(response.payload["leak"]["status"], "dry")
+        self.assertFalse(response.payload["leak"]["alert"])
+
+    def test_monitoring_compact_marks_leak_wet_as_critical(self) -> None:
+        response = handle_api_request(
+            "/api/monitoring/compact",
+            make_state([make_reading()], leak_readings=[make_leak_reading(status="wet", raw_value=1)]),
+        )
+
+        self.assertEqual(response.status, HTTPStatus.OK)
+        self.assertEqual(response.payload["level"], "critical")
+        self.assertEqual(response.payload["label"], "DANGER")
+        self.assertTrue(response.payload["alert"])
+        self.assertEqual(response.payload["title"], "Leak detected")
+        self.assertEqual(response.payload["leak"]["status"], "wet")
+        self.assertTrue(response.payload["leak"]["alert"])
+
 
 def make_state(
     readings: list[ConfiguredSensorReading],
@@ -570,17 +638,27 @@ def make_state(
     weather_enabled: bool = False,
     sensors: dict[str, SensorConfig] | None = None,
     environment_sensors: dict[str, EnvironmentSensorConfig] | None = None,
+    leak_sensors: dict[str, "LeakSensorConfig"] | None = None,
+    leak_readings: list[LeakReading] | None = None,
+    leak_provider_raises: bool = False,
 ) -> ApiState:
     from aquapi.config import WeatherConfig
+
+    def leak_provider(include_hidden: bool) -> list[LeakReading]:
+        if leak_provider_raises:
+            raise RuntimeError("gpio unavailable")
+        return leak_readings or []
 
     return ApiState(
         config=AppConfig(
             sensors=sensors or {},
             environment_sensors=environment_sensors,
+            leak_sensors=leak_sensors,
             logging=logging_config or LoggingConfig(),
             weather=WeatherConfig(enabled=weather_enabled),
         ),
         readings_provider=lambda: readings,
+        leak_provider=leak_provider if leak_readings is not None or leak_provider_raises else None,
     )
 
 
@@ -663,6 +741,54 @@ def make_environment_reading(
         temperature_c=temperature_c,
         relative_humidity_percent=humidity_percent,
         crc_ok=crc_ok,
+        error=error,
+    )
+
+
+def make_leak_sensors() -> dict[str, "LeakSensorConfig"]:
+    from aquapi.config import LeakSensorConfig
+
+    return {
+        "leak_main": LeakSensorConfig(
+            sensor_key="leak_main",
+            name="漏水センサー",
+            short_name="漏水",
+            short_name_ascii="LEAK",
+            type="conductive_probe",
+            role="leak",
+            enabled=True,
+            visible=True,
+            sort_order=300,
+            drive_gpio=17,
+            sense_gpio=27,
+            pull="down",
+            active_state="high",
+            read_interval_seconds=5,
+            debounce_seconds=2,
+        )
+    }
+
+
+def make_leak_reading(
+    *,
+    status: str,
+    raw_value: int | None,
+    error: str | None = None,
+) -> LeakReading:
+    return LeakReading(
+        sensor_key="leak_main",
+        name="漏水センサー",
+        short_name="漏水",
+        short_name_ascii="LEAK",
+        type="conductive_probe",
+        role="leak",
+        enabled=True,
+        visible=True,
+        sort_order=300,
+        status=status,
+        alert=status == "wet",
+        raw_value=raw_value,
+        measured_at=datetime(2026, 6, 9, 18, 0, tzinfo=timezone.utc),
         error=error,
     )
 

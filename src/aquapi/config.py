@@ -84,9 +84,39 @@ class EnvironmentSensorConfig:
 
 
 @dataclass(frozen=True)
+class LeakSensorConfig:
+    sensor_key: str
+    name: str
+    type: str
+    role: str
+    enabled: bool
+    visible: bool
+    sort_order: int
+    drive_gpio: int
+    sense_gpio: int
+    pull: str
+    active_state: str
+    read_interval_seconds: int
+    debounce_seconds: int
+    short_name: str = ""
+    short_name_ascii: str = ""
+
+    def __post_init__(self) -> None:
+        if self.short_name == "":
+            object.__setattr__(self, "short_name", default_short_name(self.name))
+        if self.short_name_ascii == "":
+            object.__setattr__(
+                self,
+                "short_name_ascii",
+                default_short_name_ascii(short_name=self.short_name, name=self.name),
+            )
+
+
+@dataclass(frozen=True)
 class AppConfig:
     sensors: dict[str, SensorConfig]
     environment_sensors: dict[str, EnvironmentSensorConfig] | None = None
+    leak_sensors: dict[str, LeakSensorConfig] | None = None
     listen_addr: str = "0.0.0.0"
     listen_port: int = 8080
     logging: LoggingConfig = LoggingConfig()
@@ -97,6 +127,9 @@ class AppConfig:
 
     def configured_environment_sensors(self) -> dict[str, EnvironmentSensorConfig]:
         return self.environment_sensors or {}
+
+    def configured_leak_sensors(self) -> dict[str, LeakSensorConfig]:
+        return self.leak_sensors or {}
 
 
 def load_config(path: Path) -> AppConfig:
@@ -133,6 +166,7 @@ def load_config(path: Path) -> AppConfig:
     return AppConfig(
         sensors=sensors,
         environment_sensors=_load_environment_sensor_configs(data.get("environment_sensors")),
+        leak_sensors=_load_leak_sensor_configs(data.get("leak_sensors")),
         listen_addr=_optional_str(data, "listen_addr", default="0.0.0.0"),
         listen_port=_optional_int(data, "listen_port", default=8080),
         logging=_load_logging_config(data.get("logging")),
@@ -204,6 +238,43 @@ def _load_environment_sensor_configs(data: Any) -> dict[str, EnvironmentSensorCo
     return sensors
 
 
+def _load_leak_sensor_configs(data: Any) -> dict[str, LeakSensorConfig]:
+    if data is None:
+        return {}
+    if not isinstance(data, dict):
+        raise ValueError("leak_sensors は object である必要があります")
+
+    sensors: dict[str, LeakSensorConfig] = {}
+    for sensor_key, raw_config in data.items():
+        if not isinstance(sensor_key, str) or sensor_key == "":
+            raise ValueError("leak sensor key は空でない文字列である必要があります")
+        if not isinstance(raw_config, dict):
+            raise ValueError(f"{sensor_key}: leak sensor 設定は object である必要があります")
+        sensors[sensor_key] = LeakSensorConfig(
+            sensor_key=sensor_key,
+            name=_required_str(raw_config, "name", sensor_key),
+            type=_required_str(raw_config, "type", sensor_key),
+            role=_optional_role(raw_config, "role", default="leak"),
+            enabled=_optional_bool(raw_config, "enabled", default=True),
+            visible=_optional_bool(raw_config, "visible", default=True),
+            sort_order=_optional_sort_order(raw_config, "sort_order", default=1000),
+            drive_gpio=_optional_int(raw_config, "drive_gpio", default=17),
+            sense_gpio=_optional_int(raw_config, "sense_gpio", default=27),
+            pull=_optional_choice(raw_config, "pull", default="down", choices={"down", "up", "none"}),
+            active_state=_optional_choice(
+                raw_config,
+                "active_state",
+                default="high",
+                choices={"high", "low"},
+            ),
+            read_interval_seconds=_optional_int(raw_config, "read_interval_seconds", default=5),
+            debounce_seconds=_optional_int(raw_config, "debounce_seconds", default=2),
+            short_name=_optional_short_name(raw_config, "short_name"),
+            short_name_ascii=_optional_short_name_ascii(raw_config, "short_name_ascii"),
+        )
+    return sensors
+
+
 def _required_str(data: dict[str, Any], key: str, sensor_id: str) -> str:
     value = data.get(key)
     if not isinstance(value, str) or value == "":
@@ -250,8 +321,24 @@ def _optional_weather_source(data: dict[str, Any], key: str, *, default: str) ->
 
 def _optional_role(data: dict[str, Any], key: str, *, default: str) -> str:
     value = _optional_str(data, key, default=default)
-    if value not in {"aquarium", "outdoor", "indoor", "disabled", "unknown"}:
-        raise ValueError(f"{key} は aquarium, outdoor, indoor, disabled, unknown のいずれかである必要があります")
+    if value not in {"aquarium", "outdoor", "indoor", "leak", "disabled", "unknown"}:
+        raise ValueError(
+            f"{key} は aquarium, outdoor, indoor, leak, disabled, unknown のいずれかである必要があります"
+        )
+    return value
+
+
+def _optional_choice(
+    data: dict[str, Any],
+    key: str,
+    *,
+    default: str,
+    choices: set[str],
+) -> str:
+    value = _optional_str(data, key, default=default)
+    if value not in choices:
+        allowed = ", ".join(sorted(choices))
+        raise ValueError(f"{key} は {allowed} のいずれかである必要があります")
     return value
 
 

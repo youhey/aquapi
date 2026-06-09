@@ -9,6 +9,7 @@ from pathlib import Path
 from aquapi.api import serve_api
 from aquapi.config import AppConfig, load_config
 from aquapi.environment import EnvironmentReading, read_all_environment_sensors
+from aquapi.leak import leak_reading_to_dict, read_all_leak_sensors
 from aquapi.logs import collect_forever, initialize_storage, log_once
 from aquapi.sqlite_storage import SQLiteStorage
 from aquapi.sensors import (
@@ -29,6 +30,10 @@ def build_parser() -> argparse.ArgumentParser:
     read_environment_parser = subparsers.add_parser("read-environment", help="室内環境センサーを読み取ります")
     read_environment_parser.add_argument("--json", action="store_true", help="JSON 形式で出力します")
     read_environment_parser.add_argument("--config", type=Path, required=True, help="センサー設定 JSON のパス")
+
+    read_leak_parser = subparsers.add_parser("read-leak", help="漏水センサーを読み取ります")
+    read_leak_parser.add_argument("--json", action="store_true", help="JSON 形式で出力します")
+    read_leak_parser.add_argument("--config", type=Path, required=True, help="センサー設定 JSON のパス")
 
     serve_parser = subparsers.add_parser("serve", help="JSON API サーバーを起動します")
     serve_parser.add_argument("--config", type=Path, required=True, help="センサー設定 JSON のパス")
@@ -112,6 +117,28 @@ def run_read_environment(*, as_json: bool, config_path: Path) -> int:
     return 0
 
 
+def run_read_leak(*, as_json: bool, config_path: Path) -> int:
+    config = _load_config(config_path)
+    if config is None:
+        return 1
+
+    readings = read_all_leak_sensors(config)
+
+    if as_json:
+        payload = {"sensors": [leak_reading_to_dict(reading) for reading in readings]}
+        print(json.dumps(payload, ensure_ascii=False, indent=2))
+        return 0
+
+    for reading in readings:
+        raw = "-" if reading.raw_value is None else str(reading.raw_value)
+        if reading.error is None:
+            print(f"{reading.sensor_key} status={reading.status} raw={raw}")
+        else:
+            print(f"{reading.sensor_key} status={reading.status} raw={raw} error={reading.error}")
+
+    return 0
+
+
 def main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
 
@@ -119,6 +146,8 @@ def main(argv: list[str] | None = None) -> int:
         return run_read(as_json=args.json, config_path=args.config)
     if args.command == "read-environment":
         return run_read_environment(as_json=args.json, config_path=args.config)
+    if args.command == "read-leak":
+        return run_read_leak(as_json=args.json, config_path=args.config)
     if args.command == "serve":
         return run_serve(config_path=args.config, host=args.host, port=args.port)
     if args.command == "log-once":

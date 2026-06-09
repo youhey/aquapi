@@ -33,6 +33,24 @@
       "read_interval_seconds": 60
     }
   },
+  "leak_sensors": {
+    "leak_main": {
+      "name": "漏水センサー",
+      "short_name": "漏水",
+      "short_name_ascii": "LEAK",
+      "type": "conductive_probe",
+      "role": "leak",
+      "enabled": true,
+      "visible": true,
+      "sort_order": 300,
+      "drive_gpio": 17,
+      "sense_gpio": 27,
+      "pull": "down",
+      "active_state": "high",
+      "read_interval_seconds": 5,
+      "debounce_seconds": 2
+    }
+  },
   "sensors": {
     "28-00000020f5ed": {
       "name": "増田川水槽",

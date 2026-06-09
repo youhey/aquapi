@@ -10,6 +10,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import parse_qs, unquote, urlparse
 
 from aquapi.config import AppConfig, SensorConfig
+from aquapi.leak import LeakReading, leak_reading_to_dict, read_all_leak_sensors, unknown_leak_readings
 from aquapi.logs import RANGE_DELTAS, build_history_summary_payload, build_series_payload
 from aquapi.sensors import (
     ConfiguredSensorReading,
@@ -20,6 +21,7 @@ from aquapi.sqlite_storage import SQLiteStorage
 
 
 ReadingsProvider = Callable[[], list[ConfiguredSensorReading]]
+LeakProvider = Callable[[bool], list[LeakReading]]
 STATUS_KEYS = ("ok", "low", "high", "unknown", "error")
 COMPACT_STATUS_PRIORITY = {
     "danger": 3,
@@ -34,6 +36,7 @@ class ApiState:
     config: AppConfig
     readings_provider: ReadingsProvider
     version: str = "dev"
+    leak_provider: LeakProvider | None = None
 
 
 @dataclass(frozen=True)
@@ -100,6 +103,9 @@ def handle_api_request(
 
     if path == "/api/environment/summary":
         return _handle_environment_summary(state, params)
+
+    if path == "/api/leak/latest":
+        return _handle_leak_latest(state, params)
 
     if path == "/api/weather/latest":
         return _handle_weather_latest(state)
@@ -219,6 +225,9 @@ def _handle_current_summary(state: ApiState) -> ApiResponse:
                         "relative_humidity_percent": first.get("relative_humidity_percent"),
                         "measured_at": first.get("measured_at"),
                     }
+    leak_readings = _leak_readings(state)
+    if leak_readings:
+        payload["leak"] = _summary_leak_payload(leak_readings)
     return ApiResponse(HTTPStatus.OK, payload)
 
 
@@ -237,7 +246,7 @@ def _range_error(exc: ValueError) -> ApiResponse:
 def _handle_monitoring_compact(state: ApiState) -> ApiResponse:
     try:
         readings = state.readings_provider()
-        payload = build_monitoring_compact_payload(readings)
+        payload = build_monitoring_compact_payload(readings, leak_readings=_leak_readings(state))
     except Exception as exc:
         return ApiResponse(
             HTTPStatus.INTERNAL_SERVER_ERROR,
@@ -296,6 +305,18 @@ def _handle_environment_summary(state: ApiState, params: dict[str, str]) -> ApiR
         end=end,
     )
     return ApiResponse(HTTPStatus.OK, {"generated_at": _now_iso(), **payload})
+
+
+def _handle_leak_latest(state: ApiState, params: dict[str, str]) -> ApiResponse:
+    include_hidden = params.get("include_hidden") == "true"
+    readings = _leak_readings(state, include_hidden=include_hidden)
+    return ApiResponse(
+        HTTPStatus.OK,
+        {
+            "generated_at": _now_iso(),
+            "sensors": [leak_reading_to_dict(reading) for reading in readings],
+        },
+    )
 
 
 def _handle_weather_latest(state: ApiState) -> ApiResponse:
@@ -447,9 +468,49 @@ def build_sensors_payload(config: AppConfig) -> dict[str, object]:
     }
 
 
-def build_monitoring_compact_payload(readings: list[ConfiguredSensorReading]) -> dict[str, object]:
+def build_monitoring_compact_payload(
+    readings: list[ConfiguredSensorReading],
+    *,
+    leak_readings: list[LeakReading] | None = None,
+) -> dict[str, object]:
     tanks = [_compact_tank(reading) for reading in _sort_readings(_compact_aquarium_readings(readings))]
+    leak = _compact_leak_payload(leak_readings or [])
+    leak_alert_count = sum(1 for reading in leak_readings or [] if reading.status == "wet")
+    leak_unknown_count = sum(1 for reading in leak_readings or [] if reading.status == "unknown")
+    if leak_alert_count > 0:
+        return {
+            "source": "aquapi",
+            "generated_at": _now_iso(),
+            "level": "critical",
+            "label": "DANGER",
+            "alert": True,
+            "title": "Leak detected",
+            "message": "Leak sensor detected water.",
+            "issue_count": leak_alert_count,
+            "tanks": tanks,
+            "leak": leak,
+        }
+
     if not tanks:
+        if leak["sensors"]:
+            level = "unknown" if leak_unknown_count > 0 else "ok"
+            title, message = (
+                ("Leak sensor status unavailable", "AquaPi cannot determine current leak sensor status.")
+                if level == "unknown"
+                else ("All aquariums are safe", "All aquarium temperatures are within safety range.")
+            )
+            return {
+                "source": "aquapi",
+                "generated_at": _now_iso(),
+                "level": level,
+                "label": _compact_label(level),
+                "alert": level != "ok",
+                "title": title,
+                "message": message,
+                "issue_count": leak_unknown_count,
+                "tanks": [],
+                "leak": leak,
+            }
         return {
             "source": "aquapi",
             "generated_at": _now_iso(),
@@ -460,10 +521,15 @@ def build_monitoring_compact_payload(readings: list[ConfiguredSensorReading]) ->
             "message": "No visible aquarium sensors are configured.",
             "issue_count": 0,
             "tanks": [],
+            "leak": leak,
         }
 
     level = _compact_level([str(tank["status"]) for tank in tanks])
+    if level == "ok" and leak_unknown_count > 0:
+        level = "unknown"
     issue_count = sum(1 for tank in tanks if tank["status"] in {"warning", "danger", "unknown"})
+    if level == "unknown":
+        issue_count += leak_unknown_count
     title, message = _compact_title_message(level, _compact_message_count(level, tanks))
     return {
         "source": "aquapi",
@@ -475,6 +541,7 @@ def build_monitoring_compact_payload(readings: list[ConfiguredSensorReading]) ->
         "message": message,
         "issue_count": issue_count,
         "tanks": tanks,
+        "leak": leak,
     }
 
 
@@ -578,6 +645,73 @@ def _compact_message_count(level: str, tanks: list[dict[str, object]]) -> int:
     if level == "warning":
         return sum(1 for tank in tanks if tank["status"] == "warning")
     return sum(1 for tank in tanks if tank["status"] == "unknown")
+
+
+def _leak_readings(state: ApiState, *, include_hidden: bool = False) -> list[LeakReading]:
+    try:
+        if state.leak_provider is not None:
+            return state.leak_provider(include_hidden)
+        return read_all_leak_sensors(state.config, include_hidden=include_hidden)
+    except Exception:
+        return unknown_leak_readings(state.config, include_hidden=include_hidden)
+
+
+def _summary_leak_payload(readings: list[LeakReading]) -> dict[str, object]:
+    return {
+        "status": _leak_overall_status(readings),
+        "alert": any(reading.alert for reading in readings),
+        "sensors": [
+            {
+                "sensor_key": reading.sensor_key,
+                "status": reading.status,
+                "alert": reading.alert,
+                "measured_at": _datetime_to_iso(reading.measured_at),
+            }
+            for reading in readings
+        ],
+    }
+
+
+def _compact_leak_payload(readings: list[LeakReading]) -> dict[str, object]:
+    status = _leak_overall_status(readings)
+    return {
+        "status": status,
+        "alert": status == "wet",
+        "label": _compact_leak_label(status),
+        "sensors": [
+            {
+                "sensor_key": reading.sensor_key,
+                "short_name": reading.short_name,
+                "short_name_ascii": reading.short_name_ascii,
+                "status": reading.status,
+                "alert": reading.alert,
+                "measured_at": _datetime_to_iso(reading.measured_at),
+            }
+            for reading in readings
+        ],
+    }
+
+
+def _leak_overall_status(readings: list[LeakReading]) -> str:
+    if any(reading.status == "wet" for reading in readings):
+        return "wet"
+    if any(reading.status == "unknown" for reading in readings) or not readings:
+        return "unknown"
+    return "dry"
+
+
+def _compact_leak_label(status: str) -> str:
+    if status == "wet":
+        return "LEAK"
+    if status == "dry":
+        return "LEAK OK"
+    return "LEAK UNK"
+
+
+def _datetime_to_iso(value: datetime | None) -> str | None:
+    if value is None:
+        return None
+    return value.astimezone().isoformat(timespec="seconds")
 
 
 def _issue_message(issue_count: int, suffix: str) -> str:

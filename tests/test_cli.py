@@ -7,6 +7,7 @@ from unittest.mock import patch
 
 from aquapi.cli import main
 from aquapi.environment import EnvironmentReading
+from aquapi.leak import LeakReading
 
 
 class CliTests(unittest.TestCase):
@@ -138,6 +139,39 @@ class CliTests(unittest.TestCase):
         self.assertEqual(payload["sensors"][0]["sensor_key"], "sht31_room")
         self.assertEqual(payload["sensors"][0]["temperature_c"], 25.0)
         self.assertEqual(payload["sensors"][0]["relative_humidity_percent"], 56.0)
+
+    def test_read_leak_command_outputs_status(self) -> None:
+        with TemporaryDirectory() as tmp_dir:
+            config_path = write_sqlite_config(Path(tmp_dir))
+
+            with (
+                patch("aquapi.cli.read_all_leak_sensors") as read_all,
+                patch("sys.stdout", new_callable=StringIO) as stdout,
+            ):
+                from datetime import datetime, timezone
+
+                read_all.return_value = [
+                    LeakReading(
+                        sensor_key="leak_main",
+                        name="漏水センサー",
+                        short_name="漏水",
+                        short_name_ascii="LEAK",
+                        type="conductive_probe",
+                        role="leak",
+                        enabled=True,
+                        visible=True,
+                        sort_order=300,
+                        status="dry",
+                        alert=False,
+                        raw_value=0,
+                        measured_at=datetime(2026, 6, 9, 18, 0, tzinfo=timezone.utc),
+                    )
+                ]
+
+                exit_code = main(["read-leak", "--config", str(config_path)])
+
+        self.assertEqual(exit_code, 0)
+        self.assertIn("leak_main status=dry raw=0", stdout.getvalue())
 
     def test_log_once_command_writes_log(self) -> None:
         with TemporaryDirectory() as tmp_dir:

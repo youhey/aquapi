@@ -50,6 +50,24 @@ class ConfigTests(unittest.TestCase):
                                 "read_interval_seconds": 60,
                             }
                         },
+                        "leak_sensors": {
+                            "leak_main": {
+                                "name": "漏水センサー",
+                                "short_name": "漏水",
+                                "short_name_ascii": "LEAK",
+                                "type": "conductive_probe",
+                                "role": "leak",
+                                "enabled": True,
+                                "visible": True,
+                                "sort_order": 300,
+                                "drive_gpio": 17,
+                                "sense_gpio": 27,
+                                "pull": "down",
+                                "active_state": "high",
+                                "read_interval_seconds": 5,
+                                "debounce_seconds": 2,
+                            }
+                        },
                         "sensors": {
                             "28-00000020f5ed": {
                                 "name": "増田川水槽",
@@ -107,6 +125,21 @@ class ConfigTests(unittest.TestCase):
         self.assertEqual(environment_sensor.i2c_bus, 1)
         self.assertEqual(environment_sensor.i2c_address, 0x44)
         self.assertEqual(environment_sensor.read_interval_seconds, 60)
+        leak_sensor = config.configured_leak_sensors()["leak_main"]
+        self.assertEqual(leak_sensor.name, "漏水センサー")
+        self.assertEqual(leak_sensor.short_name, "漏水")
+        self.assertEqual(leak_sensor.short_name_ascii, "LEAK")
+        self.assertEqual(leak_sensor.type, "conductive_probe")
+        self.assertEqual(leak_sensor.role, "leak")
+        self.assertTrue(leak_sensor.enabled)
+        self.assertTrue(leak_sensor.visible)
+        self.assertEqual(leak_sensor.sort_order, 300)
+        self.assertEqual(leak_sensor.drive_gpio, 17)
+        self.assertEqual(leak_sensor.sense_gpio, 27)
+        self.assertEqual(leak_sensor.pull, "down")
+        self.assertEqual(leak_sensor.active_state, "high")
+        self.assertEqual(leak_sensor.read_interval_seconds, 5)
+        self.assertEqual(leak_sensor.debounce_seconds, 2)
 
     def test_load_config_defaults_sensor_display_metadata(self) -> None:
         with TemporaryDirectory() as tmp_dir:
@@ -227,6 +260,37 @@ class ConfigTests(unittest.TestCase):
         self.assertEqual(environment_sensor.short_name, "ROOM")
         self.assertEqual(environment_sensor.short_name_ascii, "ROOM")
 
+    def test_load_config_defaults_leak_gpio_values(self) -> None:
+        with TemporaryDirectory() as tmp_dir:
+            config_path = Path(tmp_dir) / "aquapi.json"
+            config_path.write_text(
+                json.dumps(
+                    {
+                        "sensors": {},
+                        "leak_sensors": {
+                            "leak_main": {
+                                "name": "LEAK",
+                                "type": "conductive_probe",
+                            }
+                        },
+                    },
+                    ensure_ascii=False,
+                ),
+                encoding="utf-8",
+            )
+
+            config = load_config(config_path)
+
+        leak_sensor = config.configured_leak_sensors()["leak_main"]
+        self.assertEqual(leak_sensor.drive_gpio, 17)
+        self.assertEqual(leak_sensor.sense_gpio, 27)
+        self.assertEqual(leak_sensor.pull, "down")
+        self.assertEqual(leak_sensor.active_state, "high")
+        self.assertEqual(leak_sensor.read_interval_seconds, 5)
+        self.assertEqual(leak_sensor.debounce_seconds, 2)
+        self.assertEqual(leak_sensor.role, "leak")
+        self.assertEqual(leak_sensor.short_name_ascii, "LEAK")
+
     def test_load_config_defaults_api_listen_values(self) -> None:
         with TemporaryDirectory() as tmp_dir:
             config_path = Path(tmp_dir) / "aquapi.json"
@@ -269,6 +333,10 @@ class ConfigTests(unittest.TestCase):
         environment_sensor = config.configured_environment_sensors()["sht31_room"]
         self.assertEqual(environment_sensor.short_name_ascii, "ROOM")
         self.assertEqual(environment_sensor.i2c_address, 0x44)
+        leak_sensor = config.configured_leak_sensors()["leak_main"]
+        self.assertEqual(leak_sensor.short_name_ascii, "LEAK")
+        self.assertEqual(leak_sensor.drive_gpio, 17)
+        self.assertEqual(leak_sensor.sense_gpio, 27)
 
     def test_load_config_can_select_jsonl_storage(self) -> None:
         with TemporaryDirectory() as tmp_dir:
