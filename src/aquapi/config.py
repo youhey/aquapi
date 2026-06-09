@@ -58,8 +58,35 @@ class WeatherConfig:
 
 
 @dataclass(frozen=True)
+class EnvironmentSensorConfig:
+    sensor_key: str
+    name: str
+    type: str
+    role: str
+    enabled: bool
+    visible: bool
+    sort_order: int
+    i2c_bus: int
+    i2c_address: int
+    read_interval_seconds: int
+    short_name: str = ""
+    short_name_ascii: str = ""
+
+    def __post_init__(self) -> None:
+        if self.short_name == "":
+            object.__setattr__(self, "short_name", default_short_name(self.name))
+        if self.short_name_ascii == "":
+            object.__setattr__(
+                self,
+                "short_name_ascii",
+                default_short_name_ascii(short_name=self.short_name, name=self.name),
+            )
+
+
+@dataclass(frozen=True)
 class AppConfig:
     sensors: dict[str, SensorConfig]
+    environment_sensors: dict[str, EnvironmentSensorConfig] | None = None
     listen_addr: str = "0.0.0.0"
     listen_port: int = 8080
     logging: LoggingConfig = LoggingConfig()
@@ -67,6 +94,9 @@ class AppConfig:
 
     def find_sensor(self, sensor_id: str) -> SensorConfig | None:
         return self.sensors.get(sensor_id)
+
+    def configured_environment_sensors(self) -> dict[str, EnvironmentSensorConfig]:
+        return self.environment_sensors or {}
 
 
 def load_config(path: Path) -> AppConfig:
@@ -102,6 +132,7 @@ def load_config(path: Path) -> AppConfig:
 
     return AppConfig(
         sensors=sensors,
+        environment_sensors=_load_environment_sensor_configs(data.get("environment_sensors")),
         listen_addr=_optional_str(data, "listen_addr", default="0.0.0.0"),
         listen_port=_optional_int(data, "listen_port", default=8080),
         logging=_load_logging_config(data.get("logging")),
@@ -142,6 +173,35 @@ def _load_weather_config(data: Any) -> WeatherConfig:
         forecast_days=_optional_int(data, "forecast_days", default=2),
         retention_days=_optional_retention_days(data, "retention_days", default=365),
     )
+
+
+def _load_environment_sensor_configs(data: Any) -> dict[str, EnvironmentSensorConfig]:
+    if data is None:
+        return {}
+    if not isinstance(data, dict):
+        raise ValueError("environment_sensors は object である必要があります")
+
+    sensors: dict[str, EnvironmentSensorConfig] = {}
+    for sensor_key, raw_config in data.items():
+        if not isinstance(sensor_key, str) or sensor_key == "":
+            raise ValueError("environment sensor key は空でない文字列である必要があります")
+        if not isinstance(raw_config, dict):
+            raise ValueError(f"{sensor_key}: environment sensor 設定は object である必要があります")
+        sensors[sensor_key] = EnvironmentSensorConfig(
+            sensor_key=sensor_key,
+            name=_required_str(raw_config, "name", sensor_key),
+            type=_required_str(raw_config, "type", sensor_key),
+            role=_optional_role(raw_config, "role", default="indoor"),
+            enabled=_optional_bool(raw_config, "enabled", default=True),
+            visible=_optional_bool(raw_config, "visible", default=True),
+            sort_order=_optional_sort_order(raw_config, "sort_order", default=1000),
+            i2c_bus=_optional_int(raw_config, "i2c_bus", default=1),
+            i2c_address=_optional_i2c_address(raw_config, "i2c_address", default=0x44),
+            read_interval_seconds=_optional_int(raw_config, "read_interval_seconds", default=60),
+            short_name=_optional_short_name(raw_config, "short_name"),
+            short_name_ascii=_optional_short_name_ascii(raw_config, "short_name_ascii"),
+        )
+    return sensors
 
 
 def _required_str(data: dict[str, Any], key: str, sensor_id: str) -> str:
@@ -220,6 +280,20 @@ def _optional_short_name_ascii(data: dict[str, Any], key: str) -> str:
     if not value.isascii():
         raise ValueError(f"{key} は ASCII 文字列である必要があります")
     return value
+
+
+def _optional_i2c_address(data: dict[str, Any], key: str, *, default: int) -> int:
+    value = data.get(key, default)
+    if isinstance(value, bool):
+        raise ValueError(f"{key} は整数または 0x 形式の文字列である必要があります")
+    if isinstance(value, int):
+        return value
+    if isinstance(value, str):
+        try:
+            return int(value, 0)
+        except ValueError as exc:
+            raise ValueError(f"{key} は整数または 0x 形式の文字列である必要があります") from exc
+    raise ValueError(f"{key} は整数または 0x 形式の文字列である必要があります")
 
 
 def default_sensor_role(sensor_type: object) -> str:

@@ -6,6 +6,7 @@ import unittest
 from unittest.mock import patch
 
 from aquapi.cli import main
+from aquapi.environment import EnvironmentReading
 
 
 class CliTests(unittest.TestCase):
@@ -104,6 +105,39 @@ class CliTests(unittest.TestCase):
         _, kwargs = serve_api.call_args
         self.assertEqual(kwargs["host"], "127.0.0.1")
         self.assertEqual(kwargs["port"], 18081)
+
+    def test_read_environment_json_outputs_sht31_reading(self) -> None:
+        with TemporaryDirectory() as tmp_dir:
+            config_path = write_sqlite_config(Path(tmp_dir))
+
+            with (
+                patch("aquapi.cli.read_all_environment_sensors") as read_all,
+                patch("sys.stdout", new_callable=StringIO) as stdout,
+            ):
+                read_all.return_value = [
+                    EnvironmentReading(
+                        sensor_key="sht31_room",
+                        name="室内",
+                        short_name="室内",
+                        short_name_ascii="ROOM",
+                        type="sht31",
+                        role="indoor",
+                        enabled=True,
+                        visible=True,
+                        sort_order=200,
+                        temperature_c=25.0,
+                        relative_humidity_percent=56.0,
+                        crc_ok=True,
+                    )
+                ]
+
+                exit_code = main(["read-environment", "--config", str(config_path), "--json"])
+
+        self.assertEqual(exit_code, 0)
+        payload = json.loads(stdout.getvalue())
+        self.assertEqual(payload["sensors"][0]["sensor_key"], "sht31_room")
+        self.assertEqual(payload["sensors"][0]["temperature_c"], 25.0)
+        self.assertEqual(payload["sensors"][0]["relative_humidity_percent"], 56.0)
 
     def test_log_once_command_writes_log(self) -> None:
         with TemporaryDirectory() as tmp_dir:

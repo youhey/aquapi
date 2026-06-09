@@ -18,6 +18,21 @@
     "forecast_days": 2,
     "retention_days": 365
   },
+  "environment_sensors": {
+    "sht31_room": {
+      "name": "室内",
+      "short_name": "室内",
+      "short_name_ascii": "ROOM",
+      "type": "sht31",
+      "role": "indoor",
+      "enabled": true,
+      "visible": true,
+      "sort_order": 200,
+      "i2c_bus": 1,
+      "i2c_address": "0x44",
+      "read_interval_seconds": 60
+    }
+  },
   "sensors": {
     "28-00000020f5ed": {
       "name": "増田川水槽",

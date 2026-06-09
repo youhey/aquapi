@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import sqlite3
 from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import datetime
@@ -91,6 +92,15 @@ def handle_api_request(
     if path == "/api/readings/summary":
         return _handle_history_summary(state, params)
 
+    if path == "/api/environment/latest":
+        return _handle_environment_latest(state, params)
+
+    if path == "/api/environment/series":
+        return _handle_environment_series(state, params)
+
+    if path == "/api/environment/summary":
+        return _handle_environment_summary(state, params)
+
     if path == "/api/weather/latest":
         return _handle_weather_latest(state)
 
@@ -110,7 +120,7 @@ def handle_api_request(
         return ApiResponse(HTTPStatus.OK, build_readings_payload(state.readings_provider()))
 
     if path == "/api/summary":
-        return ApiResponse(HTTPStatus.OK, build_summary_payload(state.readings_provider()))
+        return _handle_current_summary(state)
 
     if path.startswith("/api/sensors/"):
         sensor_id = unquote(path.removeprefix("/api/sensors/"))
@@ -192,6 +202,26 @@ def _handle_history_summary(state: ApiState, params: dict[str, str]) -> ApiRespo
         return _range_error(exc)
 
 
+def _handle_current_summary(state: ApiState) -> ApiResponse:
+    payload = build_summary_payload(state.readings_provider())
+    if state.config.logging.storage == "sqlite" and state.config.configured_environment_sensors():
+        try:
+            latest = SQLiteStorage(state.config.logging.database_path).get_environment_latest(state.config)
+        except (OSError, sqlite3.Error):
+            latest = None
+        if latest is not None:
+            sensors = latest.get("sensors", [])
+            if isinstance(sensors, list) and sensors:
+                first = sensors[0]
+                if isinstance(first, dict):
+                    payload["environment"] = {
+                        "temperature_c": first.get("temperature_c"),
+                        "relative_humidity_percent": first.get("relative_humidity_percent"),
+                        "measured_at": first.get("measured_at"),
+                    }
+    return ApiResponse(HTTPStatus.OK, payload)
+
+
 def _range_error(exc: ValueError) -> ApiResponse:
     return ApiResponse(
         HTTPStatus.BAD_REQUEST,
@@ -220,6 +250,52 @@ def _handle_monitoring_compact(state: ApiState) -> ApiResponse:
         )
 
     return ApiResponse(HTTPStatus.OK, payload)
+
+
+def _handle_environment_latest(state: ApiState, params: dict[str, str]) -> ApiResponse:
+    include_hidden = params.get("include_hidden") == "true"
+    payload = SQLiteStorage(state.config.logging.database_path).get_environment_latest(
+        state.config,
+        include_hidden=include_hidden,
+    )
+    return ApiResponse(
+        HTTPStatus.OK,
+        {
+            "generated_at": _now_iso(),
+            **payload,
+        },
+    )
+
+
+def _handle_environment_series(state: ApiState, params: dict[str, str]) -> ApiResponse:
+    range_text = params.get("range", "24h")
+    try:
+        start, end = _range_bounds(range_text)
+    except ValueError as exc:
+        return _range_error(exc)
+    payload = SQLiteStorage(state.config.logging.database_path).get_environment_series(
+        state.config,
+        range_text=range_text,
+        start=start,
+        end=end,
+        sensor_key=params.get("sensor_key"),
+    )
+    return ApiResponse(HTTPStatus.OK, {"generated_at": _now_iso(), **payload})
+
+
+def _handle_environment_summary(state: ApiState, params: dict[str, str]) -> ApiResponse:
+    range_text = params.get("range", "24h")
+    try:
+        start, end = _range_bounds(range_text)
+    except ValueError as exc:
+        return _range_error(exc)
+    payload = SQLiteStorage(state.config.logging.database_path).get_environment_summary(
+        state.config,
+        range_text=range_text,
+        start=start,
+        end=end,
+    )
+    return ApiResponse(HTTPStatus.OK, {"generated_at": _now_iso(), **payload})
 
 
 def _handle_weather_latest(state: ApiState) -> ApiResponse:

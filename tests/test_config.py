@@ -35,6 +35,21 @@ class ConfigTests(unittest.TestCase):
                             "forecast_days": 2,
                             "retention_days": 365,
                         },
+                        "environment_sensors": {
+                            "sht31_room": {
+                                "name": "室内",
+                                "short_name": "室内",
+                                "short_name_ascii": "ROOM",
+                                "type": "sht31",
+                                "role": "indoor",
+                                "enabled": True,
+                                "visible": True,
+                                "sort_order": 200,
+                                "i2c_bus": 1,
+                                "i2c_address": "0x44",
+                                "read_interval_seconds": 60,
+                            }
+                        },
                         "sensors": {
                             "28-00000020f5ed": {
                                 "name": "増田川水槽",
@@ -81,6 +96,17 @@ class ConfigTests(unittest.TestCase):
         self.assertEqual(config.logging.retention_days, 365)
         self.assertTrue(config.weather.enabled)
         self.assertEqual(config.weather.source, "open-meteo")
+        environment_sensor = config.configured_environment_sensors()["sht31_room"]
+        self.assertEqual(environment_sensor.name, "室内")
+        self.assertEqual(environment_sensor.short_name_ascii, "ROOM")
+        self.assertEqual(environment_sensor.type, "sht31")
+        self.assertEqual(environment_sensor.role, "indoor")
+        self.assertTrue(environment_sensor.enabled)
+        self.assertTrue(environment_sensor.visible)
+        self.assertEqual(environment_sensor.sort_order, 200)
+        self.assertEqual(environment_sensor.i2c_bus, 1)
+        self.assertEqual(environment_sensor.i2c_address, 0x44)
+        self.assertEqual(environment_sensor.read_interval_seconds, 60)
 
     def test_load_config_defaults_sensor_display_metadata(self) -> None:
         with TemporaryDirectory() as tmp_dir:
@@ -172,6 +198,35 @@ class ConfigTests(unittest.TestCase):
         self.assertEqual(ascii_short.short_name_ascii, "SHORT")
         self.assertEqual(ascii_name.short_name_ascii, "OUTDOOR")
 
+    def test_load_config_reads_integer_i2c_address(self) -> None:
+        with TemporaryDirectory() as tmp_dir:
+            config_path = Path(tmp_dir) / "aquapi.json"
+            config_path.write_text(
+                json.dumps(
+                    {
+                        "sensors": {},
+                        "environment_sensors": {
+                            "sht31_room": {
+                                "name": "ROOM",
+                                "type": "sht31",
+                                "i2c_address": 68,
+                            }
+                        },
+                    },
+                    ensure_ascii=False,
+                ),
+                encoding="utf-8",
+            )
+
+            config = load_config(config_path)
+
+        environment_sensor = config.configured_environment_sensors()["sht31_room"]
+        self.assertEqual(environment_sensor.i2c_address, 0x44)
+        self.assertEqual(environment_sensor.i2c_bus, 1)
+        self.assertEqual(environment_sensor.role, "indoor")
+        self.assertEqual(environment_sensor.short_name, "ROOM")
+        self.assertEqual(environment_sensor.short_name_ascii, "ROOM")
+
     def test_load_config_defaults_api_listen_values(self) -> None:
         with TemporaryDirectory() as tmp_dir:
             config_path = Path(tmp_dir) / "aquapi.json"
@@ -211,6 +266,9 @@ class ConfigTests(unittest.TestCase):
         sensor_config = config.find_sensor("28-00000020f5ed")
         assert sensor_config is not None
         self.assertEqual(sensor_config.short_name_ascii, "MASUDA")
+        environment_sensor = config.configured_environment_sensors()["sht31_room"]
+        self.assertEqual(environment_sensor.short_name_ascii, "ROOM")
+        self.assertEqual(environment_sensor.i2c_address, 0x44)
 
     def test_load_config_can_select_jsonl_storage(self) -> None:
         with TemporaryDirectory() as tmp_dir:

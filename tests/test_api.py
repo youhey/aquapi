@@ -6,7 +6,8 @@ from http import HTTPStatus
 import unittest
 
 from aquapi.api import ApiState, build_summary_payload, handle_api_request
-from aquapi.config import AppConfig, LoggingConfig, SensorConfig
+from aquapi.config import AppConfig, EnvironmentSensorConfig, LoggingConfig, SensorConfig
+from aquapi.environment import EnvironmentReading
 from aquapi.logs import write_readings
 from aquapi.sqlite_storage import SQLiteStorage
 from aquapi.sensors import ConfiguredSensorReading
@@ -456,6 +457,111 @@ class ApiTests(unittest.TestCase):
         self.assertEqual(response.status, HTTPStatus.NOT_FOUND)
         self.assertEqual(response.payload["error"]["code"], "weather_not_found")
 
+    def test_environment_latest_returns_visible_sensors_and_latest_record(self) -> None:
+        with TemporaryDirectory() as tmp_dir:
+            logging_config = make_logging_config(Path(tmp_dir))
+            storage = SQLiteStorage(logging_config.database_path)
+            now = datetime.now(timezone.utc)
+            storage.insert_environment_readings([make_environment_reading()], now)
+
+            response = handle_api_request(
+                "/api/environment/latest",
+                make_state(
+                    [],
+                    logging_config=logging_config,
+                    environment_sensors=make_environment_sensors(),
+                ),
+            )
+
+        self.assertEqual(response.status, HTTPStatus.OK)
+        sensor = response.payload["sensors"][0]
+        self.assertEqual(sensor["sensor_key"], "sht31_room")
+        self.assertEqual(sensor["temperature_c"], 25.0)
+        self.assertEqual(sensor["relative_humidity_percent"], 56.0)
+
+    def test_environment_latest_can_include_hidden_definition_without_data(self) -> None:
+        with TemporaryDirectory() as tmp_dir:
+            response = handle_api_request(
+                "/api/environment/latest",
+                make_state(
+                    [],
+                    logging_config=make_logging_config(Path(tmp_dir)),
+                    environment_sensors=make_environment_sensors(visible=False),
+                ),
+            )
+            included = handle_api_request(
+                "/api/environment/latest",
+                make_state(
+                    [],
+                    logging_config=make_logging_config(Path(tmp_dir)),
+                    environment_sensors=make_environment_sensors(visible=False),
+                ),
+                query={"include_hidden": "true"},
+            )
+
+        self.assertEqual(response.status, HTTPStatus.OK)
+        self.assertEqual(response.payload["sensors"], [])
+        self.assertEqual(included.payload["sensors"][0]["sensor_key"], "sht31_room")
+        self.assertIsNone(included.payload["sensors"][0]["temperature_c"])
+
+    def test_environment_series_and_summary_return_history(self) -> None:
+        with TemporaryDirectory() as tmp_dir:
+            logging_config = make_logging_config(Path(tmp_dir))
+            storage = SQLiteStorage(logging_config.database_path)
+            now = datetime.now(timezone.utc)
+            storage.insert_environment_readings(
+                [make_environment_reading(temperature_c=24.0, humidity_percent=55.0)],
+                now - timedelta(minutes=2),
+            )
+            storage.insert_environment_readings(
+                [make_environment_reading(temperature_c=26.0, humidity_percent=57.0)],
+                now - timedelta(minutes=1),
+            )
+            state = make_state(
+                [],
+                logging_config=logging_config,
+                environment_sensors=make_environment_sensors(),
+            )
+
+            series = handle_api_request(
+                "/api/environment/series",
+                state,
+                query={"range": "24h", "sensor_key": "sht31_room"},
+            )
+            summary = handle_api_request(
+                "/api/environment/summary",
+                state,
+                query={"range": "24h"},
+            )
+
+        self.assertEqual(series.status, HTTPStatus.OK)
+        self.assertEqual(len(series.payload["points"]), 2)
+        self.assertEqual(series.payload["points"][1]["relative_humidity_percent"], 57.0)
+        self.assertEqual(summary.status, HTTPStatus.OK)
+        self.assertEqual(summary.payload["sensors"][0]["temperature"]["avg_c"], 25.0)
+        self.assertEqual(summary.payload["sensors"][0]["relative_humidity"]["current_percent"], 57.0)
+
+    def test_summary_includes_environment_latest_when_available(self) -> None:
+        with TemporaryDirectory() as tmp_dir:
+            logging_config = make_logging_config(Path(tmp_dir))
+            SQLiteStorage(logging_config.database_path).insert_environment_readings(
+                [make_environment_reading()],
+                datetime.now(timezone.utc),
+            )
+
+            response = handle_api_request(
+                "/api/summary",
+                make_state(
+                    [make_reading()],
+                    logging_config=logging_config,
+                    environment_sensors=make_environment_sensors(),
+                ),
+            )
+
+        self.assertEqual(response.status, HTTPStatus.OK)
+        self.assertEqual(response.payload["environment"]["temperature_c"], 25.0)
+        self.assertEqual(response.payload["environment"]["relative_humidity_percent"], 56.0)
+
 
 def make_state(
     readings: list[ConfiguredSensorReading],
@@ -463,12 +569,14 @@ def make_state(
     logging_config: LoggingConfig | None = None,
     weather_enabled: bool = False,
     sensors: dict[str, SensorConfig] | None = None,
+    environment_sensors: dict[str, EnvironmentSensorConfig] | None = None,
 ) -> ApiState:
     from aquapi.config import WeatherConfig
 
     return ApiState(
         config=AppConfig(
             sensors=sensors or {},
+            environment_sensors=environment_sensors,
             logging=logging_config or LoggingConfig(),
             weather=WeatherConfig(enabled=weather_enabled),
         ),
@@ -509,6 +617,53 @@ def make_weather(
         evapotranspiration_mm=0.12,
         soil_temperature_c=23.4,
         soil_moisture_m3_m3=0.31,
+    )
+
+
+def make_environment_sensors(
+    *,
+    visible: bool = True,
+    enabled: bool = True,
+) -> dict[str, EnvironmentSensorConfig]:
+    return {
+        "sht31_room": EnvironmentSensorConfig(
+            sensor_key="sht31_room",
+            name="室内",
+            short_name="室内",
+            short_name_ascii="ROOM",
+            type="sht31",
+            role="indoor",
+            enabled=enabled,
+            visible=visible,
+            sort_order=200,
+            i2c_bus=1,
+            i2c_address=0x44,
+            read_interval_seconds=60,
+        )
+    }
+
+
+def make_environment_reading(
+    *,
+    temperature_c: float | None = 25.0,
+    humidity_percent: float | None = 56.0,
+    crc_ok: bool = True,
+    error: str | None = None,
+) -> EnvironmentReading:
+    return EnvironmentReading(
+        sensor_key="sht31_room",
+        name="室内",
+        short_name="室内",
+        short_name_ascii="ROOM",
+        type="sht31",
+        role="indoor",
+        enabled=True,
+        visible=True,
+        sort_order=200,
+        temperature_c=temperature_c,
+        relative_humidity_percent=humidity_percent,
+        crc_ok=crc_ok,
+        error=error,
     )
 
 

@@ -7,12 +7,13 @@ from dataclasses import dataclass
 from datetime import datetime, timedelta
 from pathlib import Path
 
-from aquapi.config import AppConfig, SensorConfig
+from aquapi.config import AppConfig, EnvironmentSensorConfig, SensorConfig
+from aquapi.environment import EnvironmentReading
 from aquapi.sensors import ConfiguredSensorReading
 from aquapi.weather import WeatherHourlyReading
 
 
-SCHEMA_VERSION = "3"
+SCHEMA_VERSION = "4"
 
 
 @dataclass(frozen=True)
@@ -105,6 +106,24 @@ class SQLiteStorage:
 
                     CREATE INDEX IF NOT EXISTS idx_weather_hourly_ts
                     ON weather_hourly(ts);
+
+                    CREATE TABLE IF NOT EXISTS environment_readings (
+                      id INTEGER PRIMARY KEY AUTOINCREMENT,
+                      sensor_key TEXT NOT NULL,
+                      sensor_name TEXT NOT NULL,
+                      temperature_milli_c INTEGER,
+                      relative_humidity_milli_percent INTEGER,
+                      crc_ok INTEGER NOT NULL DEFAULT 1,
+                      error TEXT,
+                      measured_at TEXT NOT NULL,
+                      created_at TEXT NOT NULL
+                    );
+
+                    CREATE INDEX IF NOT EXISTS idx_environment_readings_sensor_measured_at
+                    ON environment_readings(sensor_key, measured_at);
+
+                    CREATE INDEX IF NOT EXISTS idx_environment_readings_measured_at
+                    ON environment_readings(measured_at);
                     """
                 )
                 _migrate_sensors_table(conn)
@@ -485,6 +504,176 @@ class SQLiteStorage:
             with conn:
                 conn.execute("DELETE FROM weather_hourly WHERE ts < ?", (cutoff,))
 
+    def insert_environment_readings(
+        self,
+        readings: list[EnvironmentReading],
+        measured_at: datetime,
+    ) -> SQLiteWriteResult:
+        self.initialize()
+        measured_at_text = measured_at.astimezone().isoformat(timespec="seconds")
+        created_at_text = datetime.now().astimezone().isoformat(timespec="seconds")
+        with closing(self._connect()) as conn:
+            with conn:
+                conn.executemany(
+                    """
+                    INSERT INTO environment_readings (
+                      sensor_key,
+                      sensor_name,
+                      temperature_milli_c,
+                      relative_humidity_milli_percent,
+                      crc_ok,
+                      error,
+                      measured_at,
+                      created_at
+                    )
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    [
+                        (
+                            reading.sensor_key,
+                            reading.name,
+                            _float_c_to_milli(reading.temperature_c),
+                            _float_to_scaled_int(reading.relative_humidity_percent, 1000),
+                            1 if reading.crc_ok else 0,
+                            reading.error,
+                            measured_at_text,
+                            created_at_text,
+                        )
+                        for reading in readings
+                    ],
+                )
+        return SQLiteWriteResult(path=self.database_path, saved_count=len(readings))
+
+    def get_environment_latest(self, config: AppConfig, *, include_hidden: bool = False) -> dict[str, object]:
+        self.initialize()
+        sensor_configs = _environment_sensor_configs(config, include_hidden=include_hidden)
+        with closing(self._connect()) as conn:
+            rows = {
+                row["sensor_key"]: row
+                for row in conn.execute(
+                    """
+                    SELECT er.*
+                    FROM environment_readings er
+                    JOIN (
+                      SELECT sensor_key, MAX(measured_at) AS measured_at
+                      FROM environment_readings
+                      GROUP BY sensor_key
+                    ) latest
+                      ON latest.sensor_key = er.sensor_key
+                     AND latest.measured_at = er.measured_at
+                    """
+                ).fetchall()
+            }
+
+        return {
+            "sensors": [
+                _environment_latest_dict(sensor_config, rows.get(sensor_config.sensor_key))
+                for sensor_config in sensor_configs
+            ]
+        }
+
+    def get_environment_series(
+        self,
+        config: AppConfig,
+        *,
+        range_text: str,
+        start: datetime,
+        end: datetime,
+        sensor_key: str | None = None,
+    ) -> dict[str, object]:
+        self.initialize()
+        sensor_config = _resolve_environment_sensor(config, sensor_key)
+        if sensor_config is None:
+            return {"sensor_key": sensor_key, "range": range_text, "points": []}
+
+        with closing(self._connect()) as conn:
+            rows = conn.execute(
+                """
+                SELECT *
+                FROM environment_readings
+                WHERE sensor_key = ? AND measured_at >= ? AND measured_at <= ?
+                ORDER BY measured_at ASC
+                """,
+                (
+                    sensor_config.sensor_key,
+                    start.astimezone().isoformat(timespec="seconds"),
+                    end.astimezone().isoformat(timespec="seconds"),
+                ),
+            ).fetchall()
+
+        return {
+            "sensor_key": sensor_config.sensor_key,
+            "name": sensor_config.name,
+            "short_name": sensor_config.short_name,
+            "short_name_ascii": sensor_config.short_name_ascii,
+            "range": range_text,
+            "points": [_environment_point_dict(row) for row in rows],
+        }
+
+    def get_environment_summary(
+        self,
+        config: AppConfig,
+        *,
+        range_text: str,
+        start: datetime,
+        end: datetime,
+    ) -> dict[str, object]:
+        self.initialize()
+        sensor_configs = _environment_sensor_configs(config, include_hidden=False)
+        start_text = start.astimezone().isoformat(timespec="seconds")
+        end_text = end.astimezone().isoformat(timespec="seconds")
+        with closing(self._connect()) as conn:
+            rows = {
+                row["sensor_key"]: row
+                for row in conn.execute(
+                    """
+                    SELECT
+                      sensor_key,
+                      COUNT(temperature_milli_c) AS samples,
+                      MIN(temperature_milli_c) AS min_temperature_milli_c,
+                      AVG(temperature_milli_c) AS avg_temperature_milli_c,
+                      MAX(temperature_milli_c) AS max_temperature_milli_c,
+                      MIN(relative_humidity_milli_percent) AS min_relative_humidity_milli_percent,
+                      AVG(relative_humidity_milli_percent) AS avg_relative_humidity_milli_percent,
+                      MAX(relative_humidity_milli_percent) AS max_relative_humidity_milli_percent
+                    FROM environment_readings
+                    WHERE measured_at >= ? AND measured_at <= ? AND crc_ok = 1
+                    GROUP BY sensor_key
+                    """,
+                    (start_text, end_text),
+                ).fetchall()
+            }
+            latest_rows = {
+                row["sensor_key"]: row
+                for row in conn.execute(
+                    """
+                    SELECT er.*
+                    FROM environment_readings er
+                    JOIN (
+                      SELECT sensor_key, MAX(measured_at) AS measured_at
+                      FROM environment_readings
+                      WHERE measured_at >= ? AND measured_at <= ?
+                      GROUP BY sensor_key
+                    ) latest
+                      ON latest.sensor_key = er.sensor_key
+                     AND latest.measured_at = er.measured_at
+                    """,
+                    (start_text, end_text),
+                ).fetchall()
+            }
+
+        return {
+            "range": range_text,
+            "sensors": [
+                _environment_summary_dict(
+                    sensor_config,
+                    rows.get(sensor_config.sensor_key),
+                    latest_rows.get(sensor_config.sensor_key),
+                )
+                for sensor_config in sensor_configs
+            ],
+        }
+
     def _connect(self) -> sqlite3.Connection:
         conn = sqlite3.connect(self.database_path)
         conn.row_factory = sqlite3.Row
@@ -654,3 +843,115 @@ def _scaled_int_to_float(value: int | None, scale: int) -> float | None:
     if value is None:
         return None
     return value / scale
+
+
+def _environment_sensor_configs(
+    config: AppConfig,
+    *,
+    include_hidden: bool,
+) -> list[EnvironmentSensorConfig]:
+    sensors = [
+        sensor_config
+        for sensor_config in config.configured_environment_sensors().values()
+        if sensor_config.enabled and (include_hidden or sensor_config.visible)
+    ]
+    return sorted(sensors, key=lambda sensor: (sensor.sort_order, sensor.name, sensor.sensor_key))
+
+
+def _resolve_environment_sensor(
+    config: AppConfig,
+    sensor_key: str | None,
+) -> EnvironmentSensorConfig | None:
+    sensors = config.configured_environment_sensors()
+    if sensor_key is not None:
+        sensor_config = sensors.get(sensor_key)
+        if sensor_config is None or not sensor_config.enabled:
+            return None
+        return sensor_config
+
+    visible = _environment_sensor_configs(config, include_hidden=False)
+    return visible[0] if visible else None
+
+
+def _environment_latest_dict(
+    sensor_config: EnvironmentSensorConfig,
+    row: sqlite3.Row | None,
+) -> dict[str, object]:
+    base = _environment_sensor_metadata(sensor_config)
+    if row is None:
+        return {
+            **base,
+            "temperature_c": None,
+            "relative_humidity_percent": None,
+            "crc_ok": False,
+            "error": None,
+            "measured_at": None,
+        }
+    return {**base, **_environment_value_dict(row)}
+
+
+def _environment_point_dict(row: sqlite3.Row) -> dict[str, object]:
+    return {
+        "measured_at": row["measured_at"],
+        "temperature_c": _milli_to_float_c(row["temperature_milli_c"]),
+        "relative_humidity_percent": _milli_to_float_c(row["relative_humidity_milli_percent"]),
+        "crc_ok": bool(row["crc_ok"]),
+    }
+
+
+def _environment_summary_dict(
+    sensor_config: EnvironmentSensorConfig,
+    row: sqlite3.Row | None,
+    latest_row: sqlite3.Row | None,
+) -> dict[str, object]:
+    latest = _environment_value_dict(latest_row) if latest_row is not None else None
+    return {
+        "sensor_key": sensor_config.sensor_key,
+        "name": sensor_config.name,
+        "short_name": sensor_config.short_name,
+        "short_name_ascii": sensor_config.short_name_ascii,
+        "temperature": {
+            "current_c": latest["temperature_c"] if latest is not None else None,
+            "min_c": _milli_to_float_c(row["min_temperature_milli_c"]) if row is not None else None,
+            "max_c": _milli_to_float_c(row["max_temperature_milli_c"]) if row is not None else None,
+            "avg_c": _milli_to_float_c(row["avg_temperature_milli_c"]) if row is not None else None,
+        },
+        "relative_humidity": {
+            "current_percent": latest["relative_humidity_percent"] if latest is not None else None,
+            "min_percent": _milli_to_float_c(row["min_relative_humidity_milli_percent"])
+            if row is not None
+            else None,
+            "max_percent": _milli_to_float_c(row["max_relative_humidity_milli_percent"])
+            if row is not None
+            else None,
+            "avg_percent": _milli_to_float_c(row["avg_relative_humidity_milli_percent"])
+            if row is not None
+            else None,
+        },
+        "samples": row["samples"] if row is not None else 0,
+        "latest_measured_at": latest["measured_at"] if latest is not None else None,
+    }
+
+
+def _environment_sensor_metadata(sensor_config: EnvironmentSensorConfig) -> dict[str, object]:
+    return {
+        "sensor_key": sensor_config.sensor_key,
+        "name": sensor_config.name,
+        "short_name": sensor_config.short_name,
+        "short_name_ascii": sensor_config.short_name_ascii,
+        "type": sensor_config.type,
+        "role": sensor_config.role,
+        "enabled": sensor_config.enabled,
+        "visible": sensor_config.visible,
+        "sort_order": sensor_config.sort_order,
+    }
+
+
+def _environment_value_dict(row: sqlite3.Row) -> dict[str, object]:
+    return {
+        "temperature_c": _milli_to_float_c(row["temperature_milli_c"]),
+        "relative_humidity_percent": _milli_to_float_c(row["relative_humidity_milli_percent"]),
+        "crc_ok": bool(row["crc_ok"]),
+        "error": row["error"],
+        "measured_at": row["measured_at"],
+    }

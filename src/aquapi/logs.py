@@ -11,6 +11,7 @@ from pathlib import Path
 from typing import Iterator
 
 from aquapi.config import AppConfig, LoggingConfig
+from aquapi.environment import collect_environment_if_due
 from aquapi.sensors import ConfiguredSensorReading, read_all_configured_sensors
 from aquapi.sqlite_storage import SQLiteStorage
 
@@ -44,11 +45,18 @@ def log_once(
 
 
 def collect_forever(config: AppConfig) -> None:
+    last_environment_read_at: datetime | None = None
     while True:
+        current = _now()
         try:
-            log_once(config)
+            log_once(config, now=current)
         except (OSError, sqlite3.Error) as exc:
             print(f"error: {exc}", file=sys.stderr)
+        last_environment_read_at = collect_environment_if_due(
+            config,
+            now=current,
+            last_read_at=last_environment_read_at,
+        )
         time.sleep(config.logging.interval_seconds)
 
 

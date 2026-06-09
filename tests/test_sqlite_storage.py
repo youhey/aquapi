@@ -4,7 +4,8 @@ from pathlib import Path
 from tempfile import TemporaryDirectory
 import unittest
 
-from aquapi.config import AppConfig, LoggingConfig, SensorConfig
+from aquapi.config import AppConfig, EnvironmentSensorConfig, LoggingConfig, SensorConfig
+from aquapi.environment import EnvironmentReading
 from aquapi.sqlite_storage import SQLiteStorage
 from aquapi.sensors import ConfiguredSensorReading
 from aquapi.weather import WeatherHourlyReading
@@ -42,7 +43,8 @@ class SQLiteStorageTests(unittest.TestCase):
         self.assertIn("sort_order", sensor_columns)
         self.assertIn("short_name", sensor_columns)
         self.assertIn("short_name_ascii", sensor_columns)
-        self.assertEqual(schema_version, "3")
+        self.assertIn("environment_readings", tables)
+        self.assertEqual(schema_version, "4")
 
     def test_sync_sensors_inserts_and_updates_sensor_config(self) -> None:
         with TemporaryDirectory() as tmp_dir:
@@ -113,7 +115,7 @@ class SQLiteStorageTests(unittest.TestCase):
         self.assertIn("sort_order", sensor_columns)
         self.assertIn("short_name", sensor_columns)
         self.assertIn("short_name_ascii", sensor_columns)
-        self.assertEqual(schema_version, "3")
+        self.assertEqual(schema_version, "4")
 
     def test_insert_readings_saves_multiple_sensors_and_handles_duplicates(self) -> None:
         with TemporaryDirectory() as tmp_dir:
@@ -305,6 +307,60 @@ class SQLiteStorageTests(unittest.TestCase):
         self.assertEqual(summary["temperature"]["max_c"], 26.0)
         self.assertEqual(summary["precipitation"]["total_mm"], 2.0)
 
+    def test_insert_environment_readings_and_get_latest_series_summary(self) -> None:
+        with TemporaryDirectory() as tmp_dir:
+            storage = SQLiteStorage(Path(tmp_dir) / "aquapi.sqlite3")
+            config = make_environment_config()
+            now = datetime(2026, 6, 6, 12, 0, tzinfo=timezone.utc)
+            storage.insert_environment_readings(
+                [make_environment_reading(temperature_c=24.0, humidity_percent=55.0)],
+                now - timedelta(minutes=2),
+            )
+            storage.insert_environment_readings(
+                [make_environment_reading(temperature_c=26.0, humidity_percent=57.0)],
+                now - timedelta(minutes=1),
+            )
+
+            latest = storage.get_environment_latest(config)
+            series = storage.get_environment_series(
+                config,
+                range_text="24h",
+                start=now - timedelta(hours=24),
+                end=now,
+                sensor_key="sht31_room",
+            )
+            summary = storage.get_environment_summary(
+                config,
+                range_text="24h",
+                start=now - timedelta(hours=24),
+                end=now,
+            )
+
+        sensor = latest["sensors"][0]
+        self.assertEqual(sensor["sensor_key"], "sht31_room")
+        self.assertEqual(sensor["temperature_c"], 26.0)
+        self.assertEqual(sensor["relative_humidity_percent"], 57.0)
+        self.assertEqual(len(series["points"]), 2)
+        self.assertEqual(series["points"][0]["temperature_c"], 24.0)
+        self.assertEqual(summary["sensors"][0]["samples"], 2)
+        self.assertEqual(summary["sensors"][0]["temperature"]["min_c"], 24.0)
+        self.assertEqual(summary["sensors"][0]["temperature"]["avg_c"], 25.0)
+        self.assertEqual(summary["sensors"][0]["temperature"]["max_c"], 26.0)
+        self.assertEqual(summary["sensors"][0]["relative_humidity"]["current_percent"], 57.0)
+
+    def test_environment_latest_returns_definition_without_data_and_honors_visibility(self) -> None:
+        with TemporaryDirectory() as tmp_dir:
+            storage = SQLiteStorage(Path(tmp_dir) / "aquapi.sqlite3")
+            config = make_environment_config(visible=False)
+
+            hidden = storage.get_environment_latest(config)
+            included = storage.get_environment_latest(config, include_hidden=True)
+
+        self.assertEqual(hidden["sensors"], [])
+        self.assertEqual(included["sensors"][0]["sensor_key"], "sht31_room")
+        self.assertIsNone(included["sensors"][0]["temperature_c"])
+        self.assertIsNone(included["sensors"][0]["relative_humidity_percent"])
+
 
 def make_config(
     *,
@@ -334,6 +390,52 @@ def make_config(
                 short_name_ascii=short_name_ascii,
             )
         }
+    )
+
+
+def make_environment_config(*, visible: bool = True, enabled: bool = True) -> AppConfig:
+    return AppConfig(
+        sensors={},
+        environment_sensors={
+            "sht31_room": EnvironmentSensorConfig(
+                sensor_key="sht31_room",
+                name="室内",
+                short_name="室内",
+                short_name_ascii="ROOM",
+                type="sht31",
+                role="indoor",
+                enabled=enabled,
+                visible=visible,
+                sort_order=200,
+                i2c_bus=1,
+                i2c_address=0x44,
+                read_interval_seconds=60,
+            )
+        },
+    )
+
+
+def make_environment_reading(
+    *,
+    temperature_c: float | None = 25.0,
+    humidity_percent: float | None = 56.0,
+    crc_ok: bool = True,
+    error: str | None = None,
+) -> EnvironmentReading:
+    return EnvironmentReading(
+        sensor_key="sht31_room",
+        name="室内",
+        short_name="室内",
+        short_name_ascii="ROOM",
+        type="sht31",
+        role="indoor",
+        enabled=True,
+        visible=True,
+        sort_order=200,
+        temperature_c=temperature_c,
+        relative_humidity_percent=humidity_percent,
+        crc_ok=crc_ok,
+        error=error,
     )
 
 

@@ -8,6 +8,7 @@ from pathlib import Path
 
 from aquapi.api import serve_api
 from aquapi.config import AppConfig, load_config
+from aquapi.environment import EnvironmentReading, read_all_environment_sensors
 from aquapi.logs import collect_forever, initialize_storage, log_once
 from aquapi.sqlite_storage import SQLiteStorage
 from aquapi.sensors import (
@@ -24,6 +25,10 @@ def build_parser() -> argparse.ArgumentParser:
     read_parser = subparsers.add_parser("read", help="1-Wire 温度センサーを読み取ります")
     read_parser.add_argument("--json", action="store_true", help="JSON 形式で出力します")
     read_parser.add_argument("--config", type=Path, help="センサー設定 JSON のパス")
+
+    read_environment_parser = subparsers.add_parser("read-environment", help="室内環境センサーを読み取ります")
+    read_environment_parser.add_argument("--json", action="store_true", help="JSON 形式で出力します")
+    read_environment_parser.add_argument("--config", type=Path, required=True, help="センサー設定 JSON のパス")
 
     serve_parser = subparsers.add_parser("serve", help="JSON API サーバーを起動します")
     serve_parser.add_argument("--config", type=Path, required=True, help="センサー設定 JSON のパス")
@@ -82,11 +87,38 @@ def run_read(*, as_json: bool, config_path: Path | None) -> int:
     return 0
 
 
+def run_read_environment(*, as_json: bool, config_path: Path) -> int:
+    config = _load_config(config_path)
+    if config is None:
+        return 1
+
+    readings = read_all_environment_sensors(config)
+
+    if as_json:
+        payload = {"sensors": [_environment_reading_to_dict(reading) for reading in readings]}
+        print(json.dumps(payload, ensure_ascii=False, indent=2))
+        return 0
+
+    for reading in readings:
+        if reading.temperature_c is None or reading.relative_humidity_percent is None:
+            print(f"{reading.sensor_key}  error={reading.error}")
+            continue
+        print(
+            f"{reading.sensor_key}  "
+            f"temperature={reading.temperature_c:.2f}C "
+            f"humidity={reading.relative_humidity_percent:.2f}%"
+        )
+
+    return 0
+
+
 def main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
 
     if args.command == "read":
         return run_read(as_json=args.json, config_path=args.config)
+    if args.command == "read-environment":
+        return run_read_environment(as_json=args.json, config_path=args.config)
     if args.command == "serve":
         return run_serve(config_path=args.config, host=args.host, port=args.port)
     if args.command == "log-once":
@@ -272,6 +304,24 @@ def _format_ts(ts: int | None) -> str:
     from datetime import datetime
 
     return datetime.fromtimestamp(ts).astimezone().isoformat(timespec="seconds")
+
+
+def _environment_reading_to_dict(reading: EnvironmentReading) -> dict[str, object]:
+    return {
+        "sensor_key": reading.sensor_key,
+        "name": reading.name,
+        "short_name": reading.short_name,
+        "short_name_ascii": reading.short_name_ascii,
+        "type": reading.type,
+        "role": reading.role,
+        "enabled": reading.enabled,
+        "visible": reading.visible,
+        "sort_order": reading.sort_order,
+        "temperature_c": reading.temperature_c,
+        "relative_humidity_percent": reading.relative_humidity_percent,
+        "crc_ok": reading.crc_ok,
+        "error": reading.error,
+    }
 
 
 if __name__ == "__main__":
