@@ -185,6 +185,57 @@ class ApiTests(unittest.TestCase):
         self.assertEqual(tanks[0]["status"], "safety")
         self.assertFalse(tanks[0]["alert"])
 
+    def test_tanks_latest_returns_only_visible_aquarium_status(self) -> None:
+        response = handle_api_request(
+            "/api/tanks/latest",
+            make_state(
+                [
+                    make_reading("28-hidden", name="非表示", visible=False, sort_order=5),
+                    make_reading("28-outdoor", name="外気", role="outdoor", sensor_type="air"),
+                    make_reading(
+                        "28-warning",
+                        name="めだか水槽",
+                        short_name="めだか",
+                        short_name_ascii="MEDAKA",
+                        temperature_c=29.2,
+                        sort_order=20,
+                    ),
+                    make_reading(
+                        "28-safe",
+                        name="増田川水槽",
+                        short_name="増田川",
+                        short_name_ascii="MASUDA",
+                        temperature_c=21.4,
+                        sort_order=10,
+                    ),
+                ]
+            ),
+        )
+
+        self.assertEqual(response.status, HTTPStatus.OK)
+        self.assertIn("generated_at", response.payload)
+        tanks = response.payload["tanks"]
+        self.assertEqual([tank["sensor_id"] for tank in tanks], ["28-safe", "28-warning"])
+        self.assertEqual(tanks[0]["status"], "safety")
+        self.assertFalse(tanks[0]["alert"])
+        self.assertEqual(tanks[1]["status"], "warning")
+        self.assertTrue(tanks[1]["alert"])
+
+    def test_tanks_latest_can_include_hidden_aquariums(self) -> None:
+        response = handle_api_request(
+            "/api/tanks/latest",
+            make_state(
+                [
+                    make_reading("28-hidden", name="非表示", visible=False, sort_order=5),
+                    make_reading("28-visible", name="表示", sort_order=10),
+                ]
+            ),
+            query={"include_hidden": "true"},
+        )
+
+        tanks = response.payload["tanks"]
+        self.assertEqual([tank["sensor_id"] for tank in tanks], ["28-hidden", "28-visible"])
+
     def test_monitoring_compact_warns_for_small_range_deviation(self) -> None:
         response = handle_api_request(
             "/api/monitoring/compact",

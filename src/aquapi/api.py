@@ -107,6 +107,9 @@ def handle_api_request(
     if path == "/api/leak/latest":
         return _handle_leak_latest(state, params)
 
+    if path == "/api/tanks/latest":
+        return _handle_tanks_latest(state, params)
+
     if path == "/api/weather/latest":
         return _handle_weather_latest(state)
 
@@ -315,6 +318,21 @@ def _handle_leak_latest(state: ApiState, params: dict[str, str]) -> ApiResponse:
         {
             "generated_at": _now_iso(),
             "sensors": [leak_reading_to_dict(reading) for reading in readings],
+        },
+    )
+
+
+def _handle_tanks_latest(state: ApiState, params: dict[str, str]) -> ApiResponse:
+    include_hidden = params.get("include_hidden") == "true"
+    tanks = [
+        _compact_tank(reading)
+        for reading in _sort_readings(_tank_readings(state.readings_provider(), include_hidden))
+    ]
+    return ApiResponse(
+        HTTPStatus.OK,
+        {
+            "generated_at": _now_iso(),
+            "tanks": tanks,
         },
     )
 
@@ -556,10 +574,17 @@ def find_reading(
 
 
 def _compact_aquarium_readings(readings: list[ConfiguredSensorReading]) -> list[ConfiguredSensorReading]:
+    return _tank_readings(readings, include_hidden=False)
+
+
+def _tank_readings(
+    readings: list[ConfiguredSensorReading],
+    include_hidden: bool,
+) -> list[ConfiguredSensorReading]:
     return [
         reading
         for reading in readings
-        if reading.role == "aquarium" and reading.enabled and reading.visible
+        if reading.role == "aquarium" and reading.enabled and (include_hidden or reading.visible)
     ]
 
 

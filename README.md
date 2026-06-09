@@ -316,6 +316,7 @@ API 一覧:
 - `GET /api/sensors`
 - `GET /api/sensors/{sensor_id}`
 - `GET /api/monitoring/compact`
+- `GET /api/tanks/latest`
 - `GET /api/readings/series?sensor_id={sensor_id}&range=24h`
 - `GET /api/readings/summary?range=24h`
 - `GET /api/weather/latest`
@@ -335,6 +336,7 @@ curl http://aquapi.local:8080/api/summary
 curl http://aquapi.local:8080/api/sensors
 curl http://aquapi.local:8080/api/sensors/28-00000020f5ed
 curl http://aquapi.local:8080/api/monitoring/compact
+curl http://aquapi.local:8080/api/tanks/latest
 curl http://aquapi.local:8080/api/weather/latest
 curl http://aquapi.local:8080/api/environment/latest
 curl "http://aquapi.local:8080/api/environment/series?sensor_key=sht31_room&range=24h"
@@ -344,6 +346,8 @@ curl http://aquapi.local:8080/api/leak/latest
 存在しないセンサーIDは JSON エラー付きで 404 を返します。
 
 `/api/readings` の各 sensor item には `short_name`、`short_name_ascii`、`role`、`enabled`、`visible`、`sort_order` が含まれます。`/api/sensors` は設定ファイル上のセンサーマスタを返し、Viewer が表示順や分類を判断するために使えます。
+
+`/api/tanks/latest` は水槽だけの現在状態を返します。対象は `role: "aquarium"`、`enabled: true`、`visible: true` の温度センサーです。非表示も含める場合は `include_hidden=true` を指定します。`status` は compact API と同じ `safety` / `warning` / `danger` / `unknown` です。
 
 `/api/leak/latest` は漏水センサーの現在状態を返します。`status` は `dry` / `wet` / `unknown` です。`wet` の場合だけ `alert: true` になります。GPIO 初期化失敗や読み取り失敗時も API は 500 にせず、対象センサーを `unknown` として返します。
 
@@ -480,6 +484,8 @@ JSONL 互換が必要な場合は、明示的に `storage: "jsonl"` を指定し
 - `GET /api/weather/latest`
 - `GET /api/weather/series?range=24h`
 - `GET /api/weather/summary?range=7d`
+- `GET /api/tanks/latest`
+- `GET /api/tanks/latest?include_hidden=true`
 - `GET /api/environment/latest`
 - `GET /api/environment/latest?include_hidden=true`
 - `GET /api/environment/series?sensor_key=sht31_room&range=24h`
@@ -505,6 +511,7 @@ curl "http://aquapi.local:8080/api/readings/series?name=増田川水槽&range=24
 curl "http://aquapi.local:8080/api/readings/summary?range=24h"
 curl "http://aquapi.local:8080/api/weather/series?range=24h"
 curl "http://aquapi.local:8080/api/weather/summary?range=7d"
+curl "http://aquapi.local:8080/api/tanks/latest"
 curl "http://aquapi.local:8080/api/environment/latest"
 curl "http://aquapi.local:8080/api/environment/series?sensor_key=sht31_room&range=24h"
 curl "http://aquapi.local:8080/api/environment/summary?range=24h"
@@ -580,6 +587,7 @@ journalctl -u aquapi-collect.service -n 100 --no-pager
 journalctl -u aquapi-weather.service -n 100 --no-pager
 curl http://localhost:8080/api/health
 curl http://localhost:8080/api/weather/latest
+curl http://localhost:8080/api/tanks/latest
 curl http://localhost:8080/api/environment/latest
 curl http://localhost:8080/api/leak/latest
 ```
