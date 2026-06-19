@@ -16,6 +16,7 @@ FAN_ON = "on"
 FAN_OFF = "off"
 FAN_UNKNOWN = "unknown"
 FAN_DISABLED = "disabled"
+AUTOMATIC_KEEP_ON_REASONS = {"temperature_above_start", "within_hysteresis_keep_on"}
 
 
 @dataclass(frozen=True)
@@ -418,7 +419,12 @@ def _fan_state_for_reading(
             threshold_c=fan_control.stop_c,
         )
 
-    keep_on = previous is not None and previous.state == FAN_ON
+    keep_on = (
+        previous is not None
+        and previous.state == FAN_ON
+        and previous.bound_tank_id == reading.sensor_id
+        and previous.reason in AUTOMATIC_KEEP_ON_REASONS
+    )
     return _base_state(
         fan,
         FAN_ON if keep_on else FAN_OFF,

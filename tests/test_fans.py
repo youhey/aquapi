@@ -64,6 +64,31 @@ class FanTests(unittest.TestCase):
         self.assertEqual(keep_off.state, FAN_OFF)
         self.assertEqual(keep_off.reason, "within_hysteresis_keep_off")
 
+    def test_build_fan_states_does_not_keep_manual_on_inside_hysteresis(self) -> None:
+        config = make_config()
+        previous_manual_on = {
+            "fan_1": FanState(
+                fan_id="fan_1",
+                name="Fan 1",
+                gpio=22,
+                active_high=True,
+                enabled=True,
+                state=FAN_ON,
+                bound_tank_id="28-1",
+                reason="manual_on",
+            )
+        }
+
+        state = build_fan_states(
+            config,
+            [make_reading(temperature_c=27.8)],
+            previous_states=previous_manual_on,
+            now=NOW,
+        )[0]
+
+        self.assertEqual(state.state, FAN_OFF)
+        self.assertEqual(state.reason, "within_hysteresis_keep_off")
+
     def test_build_fan_states_turns_off_when_temperature_unknown(self) -> None:
         state = build_fan_states(make_config(), [make_reading(temperature_c=None, crc_ok=False)], now=NOW)[0]
 
