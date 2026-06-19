@@ -43,8 +43,9 @@ class SQLiteStorageTests(unittest.TestCase):
         self.assertIn("sort_order", sensor_columns)
         self.assertIn("short_name", sensor_columns)
         self.assertIn("short_name_ascii", sensor_columns)
+        self.assertIn("display_code", sensor_columns)
         self.assertIn("environment_readings", tables)
-        self.assertEqual(schema_version, "4")
+        self.assertEqual(schema_version, "5")
 
     def test_sync_sensors_inserts_and_updates_sensor_config(self) -> None:
         with TemporaryDirectory() as tmp_dir:
@@ -61,13 +62,14 @@ class SQLiteStorageTests(unittest.TestCase):
                     sort_order=20,
                     short_name="更新",
                     short_name_ascii="UPDATED",
+                    display_code="UPD",
                 )
             )
 
             with sqlite3.connect(storage.database_path) as conn:
                 row = conn.execute(
                     """
-                    SELECT name, short_name, short_name_ascii, type, role, enabled, visible, sort_order,
+                    SELECT name, short_name, short_name_ascii, display_code, type, role, enabled, visible, sort_order,
                            offset_milli_c, min_milli_c, max_milli_c
                     FROM sensors
                     WHERE device_id = '28-00000020f5ed'
@@ -76,7 +78,7 @@ class SQLiteStorageTests(unittest.TestCase):
 
         self.assertEqual(
             row,
-            ("更新後", "更新", "UPDATED", "water", "outdoor", 0, 0, 20, 100, 18000, 28000),
+            ("更新後", "更新", "UPDATED", "UPD", "water", "outdoor", 0, 0, 20, 100, 18000, 28000),
         )
 
     def test_initialize_migrates_existing_sensors_table(self) -> None:
@@ -115,7 +117,8 @@ class SQLiteStorageTests(unittest.TestCase):
         self.assertIn("sort_order", sensor_columns)
         self.assertIn("short_name", sensor_columns)
         self.assertIn("short_name_ascii", sensor_columns)
-        self.assertEqual(schema_version, "4")
+        self.assertIn("display_code", sensor_columns)
+        self.assertEqual(schema_version, "5")
 
     def test_insert_readings_saves_multiple_sensors_and_handles_duplicates(self) -> None:
         with TemporaryDirectory() as tmp_dir:
@@ -372,6 +375,7 @@ def make_config(
     sort_order: int = 10,
     short_name: str = "増田川",
     short_name_ascii: str = "MASUDA",
+    display_code: str = "MDS",
 ) -> AppConfig:
     return AppConfig(
         sensors={
@@ -388,6 +392,7 @@ def make_config(
                 sort_order=sort_order,
                 short_name=short_name,
                 short_name_ascii=short_name_ascii,
+                display_code=display_code,
             )
         }
     )
@@ -466,6 +471,7 @@ def make_reading(
         sort_order=10,
         short_name="増田川",
         short_name_ascii="MASUDA",
+        display_code="MDS",
     )
 
 

@@ -43,6 +43,7 @@ class ConfiguredSensorReading:
     sort_order: int = 1000
     short_name: str = ""
     short_name_ascii: str = ""
+    display_code: str = ""
 
 
 def configured_sensor_reading_to_dict(
@@ -58,6 +59,7 @@ def configured_sensor_reading_to_dict(
         "sort_order": reading.sort_order,
         "short_name": reading.short_name,
         "short_name_ascii": reading.short_name_ascii,
+        "display_code": reading.display_code,
         "raw_temperature_c": reading.raw_temperature_c,
         "temperature_c": reading.temperature_c,
         "offset": reading.offset,
@@ -120,6 +122,7 @@ def apply_sensor_config(
             sort_order=1000,
             short_name="unknown",
             short_name_ascii="unknown",
+            display_code="",
             raw_temperature_c=reading.temperature_c,
             temperature_c=reading.temperature_c,
             offset=0.0,
@@ -142,6 +145,7 @@ def apply_sensor_config(
         sort_order=sensor_config.sort_order,
         short_name=sensor_config.short_name,
         short_name_ascii=sensor_config.short_name_ascii,
+        display_code=sensor_config.display_code,
         raw_temperature_c=reading.temperature_c,
         temperature_c=temperature_c,
         offset=sensor_config.offset,
@@ -196,6 +200,7 @@ def _error_reading(
         sort_order = 1000
         short_name = "unknown"
         short_name_ascii = "unknown"
+        display_code = ""
         offset = 0.0
         min_temperature = None
         max_temperature = None
@@ -208,6 +213,7 @@ def _error_reading(
         sort_order = sensor_config.sort_order
         short_name = sensor_config.short_name
         short_name_ascii = sensor_config.short_name_ascii
+        display_code = sensor_config.display_code
         offset = sensor_config.offset
         min_temperature = sensor_config.min
         max_temperature = sensor_config.max
@@ -222,6 +228,7 @@ def _error_reading(
         sort_order=sort_order,
         short_name=short_name,
         short_name_ascii=short_name_ascii,
+        display_code=display_code,
         raw_temperature_c=None,
         temperature_c=None,
         offset=offset,

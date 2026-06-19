@@ -73,6 +73,7 @@ class ConfigTests(unittest.TestCase):
                                 "name": "増田川水槽",
                                 "short_name": "増田川",
                                 "short_name_ascii": "MASUDA",
+                                "display_code": "MDS",
                                 "type": "water",
                                 "role": "aquarium",
                                 "enabled": True,
@@ -97,6 +98,7 @@ class ConfigTests(unittest.TestCase):
         self.assertEqual(sensor_config.name, "増田川水槽")
         self.assertEqual(sensor_config.short_name, "増田川")
         self.assertEqual(sensor_config.short_name_ascii, "MASUDA")
+        self.assertEqual(sensor_config.display_code, "MDS")
         self.assertEqual(sensor_config.type, "water")
         self.assertEqual(sensor_config.role, "aquarium")
         self.assertTrue(sensor_config.enabled)
@@ -181,12 +183,15 @@ class ConfigTests(unittest.TestCase):
         self.assertEqual(water.role, "aquarium")
         self.assertEqual(water.short_name, "水槽")
         self.assertEqual(water.short_name_ascii, "")
+        self.assertEqual(water.display_code, "")
         self.assertEqual(air.role, "outdoor")
         self.assertEqual(air.short_name, "外気")
         self.assertEqual(air.short_name_ascii, "")
+        self.assertEqual(air.display_code, "")
         self.assertEqual(unknown.role, "unknown")
         self.assertEqual(unknown.short_name, "未分類")
         self.assertEqual(unknown.short_name_ascii, "")
+        self.assertEqual(unknown.display_code, "")
         self.assertTrue(water.enabled)
         self.assertTrue(water.visible)
         self.assertEqual(water.sort_order, 1000)
@@ -230,6 +235,29 @@ class ConfigTests(unittest.TestCase):
         assert ascii_name is not None
         self.assertEqual(ascii_short.short_name_ascii, "SHORT")
         self.assertEqual(ascii_name.short_name_ascii, "OUTDOOR")
+
+    def test_load_config_rejects_invalid_display_code(self) -> None:
+        with TemporaryDirectory() as tmp_dir:
+            config_path = Path(tmp_dir) / "aquapi.json"
+            config_path.write_text(
+                json.dumps(
+                    {
+                        "sensors": {
+                            "28-00000020f5ed": {
+                                "name": "増田川水槽",
+                                "type": "water",
+                                "display_code": "MASUDA",
+                                "offset": 0.0,
+                            }
+                        }
+                    },
+                    ensure_ascii=False,
+                ),
+                encoding="utf-8",
+            )
+
+            with self.assertRaisesRegex(ValueError, "display_code は 3 文字"):
+                load_config(config_path)
 
     def test_load_config_reads_integer_i2c_address(self) -> None:
         with TemporaryDirectory() as tmp_dir:
@@ -330,6 +358,19 @@ class ConfigTests(unittest.TestCase):
         sensor_config = config.find_sensor("28-00000020f5ed")
         assert sensor_config is not None
         self.assertEqual(sensor_config.short_name_ascii, "MASUDA")
+        self.assertEqual(sensor_config.display_code, "MDS")
+        medaka = config.find_sensor("28-000000224fb6")
+        mini = config.find_sensor("28-000000230ee6")
+        kingyo = config.find_sensor("28-000000235d5e")
+        outdoor = config.find_sensor("28-00000023733a")
+        assert medaka is not None
+        assert mini is not None
+        assert kingyo is not None
+        assert outdoor is not None
+        self.assertEqual(medaka.display_code, "MDK")
+        self.assertEqual(mini.display_code, "MIN")
+        self.assertEqual(kingyo.display_code, "KNG")
+        self.assertEqual(outdoor.display_code, "OUT")
         environment_sensor = config.configured_environment_sensors()["sht31_room"]
         self.assertEqual(environment_sensor.short_name_ascii, "ROOM")
         self.assertEqual(environment_sensor.i2c_address, 0x44)

@@ -85,6 +85,7 @@ class SensorTests(unittest.TestCase):
                 offset=-0.2,
                 min=18.0,
                 max=28.0,
+                display_code="MDS",
             ),
         )
 
@@ -96,6 +97,7 @@ class SensorTests(unittest.TestCase):
         self.assertTrue(configured.enabled)
         self.assertTrue(configured.visible)
         self.assertEqual(configured.sort_order, 1000)
+        self.assertEqual(configured.display_code, "MDS")
 
     def test_apply_sensor_config_returns_low_status(self) -> None:
         with TemporaryDirectory() as tmp_dir:

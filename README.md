@@ -120,7 +120,7 @@ cp configs/aquapi.example.json configs/aquapi.json
 
 `configs/aquapi.json` はローカル運用設定として `.gitignore` に含まれています。
 
-センサーIDごとに `name`、`short_name`、`short_name_ascii`、`type`、`role`、`enabled`、`visible`、`sort_order`、`offset`、`min`、`max` を設定します。
+センサーIDごとに `name`、`short_name`、`short_name_ascii`、`display_code`、`type`、`role`、`enabled`、`visible`、`sort_order`、`offset`、`min`、`max` を設定します。
 
 ```json
 {
@@ -181,6 +181,7 @@ cp configs/aquapi.example.json configs/aquapi.json
       "name": "増田川水槽",
       "short_name": "増田川",
       "short_name_ascii": "MASUDA",
+      "display_code": "MDS",
       "type": "water",
       "role": "aquarium",
       "enabled": true,
@@ -205,6 +206,8 @@ cp configs/aquapi.example.json configs/aquapi.json
 `short_name` は M5Stack などの小さい画面向けの短い表示名です。未指定時は `name` 末尾の `水槽` を除いた文字列を使い、除去後に空になる場合は `name` をそのまま使います。
 
 `short_name_ascii` は、日本語フォント対応が難しい M5Stack などの端末向けの ASCII 短縮名です。macOS Viewer などでは `short_name` / `name` を使い、M5Stack では `short_name_ascii`、`short_name`、`name`、`sensor_id` の順に表示名を選ぶ想定です。未指定時は ASCII の `short_name` または `name` から補完し、それもない場合は空文字になります。M5Stack で使うセンサーには明示設定を推奨します。
+
+`display_code` は、小型端末に詰めて表示するための 3 文字 ASCII コードです。未指定時は空文字です。設定する場合は `MDS`、`MDK`、`MIN`、`KNG`、`OUT` のように 3 文字で指定してください。
 
 API サーバーは `listen_addr` と `listen_port` で待ち受けます。初期ポートは `8080` です。
 
@@ -250,6 +253,7 @@ python -m aquapi.cli read --config configs/aquapi.json --json
       "name": "増田川水槽",
       "short_name": "増田川",
       "short_name_ascii": "MASUDA",
+      "display_code": "MDS",
       "type": "water",
       "role": "aquarium",
       "enabled": true,
@@ -345,13 +349,13 @@ curl http://aquapi.local:8080/api/leak/latest
 
 存在しないセンサーIDは JSON エラー付きで 404 を返します。
 
-`/api/readings` の各 sensor item には `short_name`、`short_name_ascii`、`role`、`enabled`、`visible`、`sort_order` が含まれます。`/api/sensors` は設定ファイル上のセンサーマスタを返し、Viewer が表示順や分類を判断するために使えます。
+`/api/readings` の各 sensor item には `short_name`、`short_name_ascii`、`display_code`、`role`、`enabled`、`visible`、`sort_order` が含まれます。`/api/sensors` は設定ファイル上のセンサーマスタを返し、Viewer が表示順や分類を判断するために使えます。
 
-`/api/tanks/latest` は水槽だけの現在状態を返します。対象は `role: "aquarium"`、`enabled: true`、`visible: true` の温度センサーです。非表示も含める場合は `include_hidden=true` を指定します。`status` は compact API と同じ `safety` / `warning` / `danger` / `unknown` です。
+`/api/tanks/latest` は水槽だけの現在状態を返します。対象は `role: "aquarium"`、`enabled: true`、`visible: true` の温度センサーです。非表示も含める場合は `include_hidden=true` を指定します。各 `tanks[]` には `display_code` が含まれます。`status` は compact API と同じ `safety` / `warning` / `danger` / `unknown` です。
 
 `/api/leak/latest` は漏水センサーの現在状態を返します。`status` は `dry` / `wet` / `unknown` です。`wet` の場合だけ `alert: true` になります。GPIO 初期化失敗や読み取り失敗時も API は 500 にせず、対象センサーを `unknown` として返します。
 
-`/api/monitoring/compact` は M5Stack / Widget / 小型表示端末向けの軽量 API です。複数 API を組み合わせず、この API だけで水槽の最低限の状態を表示できます。対象は `role: "aquarium"`、`enabled: true`、`visible: true` のセンサーだけです。`tanks[]` には `short_name` と `short_name_ascii` が含まれます。漏水センサーが `wet` の場合は、水温状態より優先して全体 `level` が `critical` になります。
+`/api/monitoring/compact` は M5Stack / Widget / 小型表示端末向けの軽量 API です。複数 API を組み合わせず、この API だけで水槽の最低限の状態を表示できます。対象は `role: "aquarium"`、`enabled: true`、`visible: true` のセンサーだけです。`tanks[]` には `short_name`、`short_name_ascii`、`display_code` が含まれます。漏水センサーが `wet` の場合は、水温状態より優先して全体 `level` が `critical` になります。
 
 compact API の全体 `level` / `label`:
 
@@ -436,7 +440,7 @@ Saved 48 hourly weather records to /var/lib/aquapi/aquapi.sqlite3
 python -m aquapi.cli weather-collect --config configs/aquapi.json
 ```
 
-SQLite には `sensors`、`readings`、`metadata`、`weather_hourly`、`environment_readings` テーブルを作成します。`sensors` には `short_name`、`short_name_ascii`、`role`、`enabled`、`visible`、`sort_order` も保存します。水温は `23.187 C` を `23187` のようにミリ℃の整数として保存します。60秒間隔、5センサー、1年保存でも約 2,628,000 readings なので SQLite で現実的に扱えます。
+SQLite には `sensors`、`readings`、`metadata`、`weather_hourly`、`environment_readings` テーブルを作成します。`sensors` には `short_name`、`short_name_ascii`、`display_code`、`role`、`enabled`、`visible`、`sort_order` も保存します。水温は `23.187 C` を `23187` のようにミリ℃の整数として保存します。60秒間隔、5センサー、1年保存でも約 2,628,000 readings なので SQLite で現実的に扱えます。
 
 DB ファイルは Git 管理しません。`*.sqlite`、`*.sqlite3`、`*.db`、`data/` は `.gitignore` に含まれています。
 

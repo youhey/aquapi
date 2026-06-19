@@ -20,6 +20,7 @@ class SensorConfig:
     sort_order: int = 1000
     short_name: str = ""
     short_name_ascii: str = ""
+    display_code: str = ""
 
     def __post_init__(self) -> None:
         if self.role == "":
@@ -161,6 +162,7 @@ def load_config(path: Path) -> AppConfig:
             sort_order=_optional_sort_order(raw_config, "sort_order", default=1000),
             short_name=_optional_short_name(raw_config, "short_name"),
             short_name_ascii=_optional_short_name_ascii(raw_config, "short_name_ascii"),
+            display_code=_optional_display_code(raw_config, "display_code"),
         )
 
     return AppConfig(
@@ -366,6 +368,19 @@ def _optional_short_name_ascii(data: dict[str, Any], key: str) -> str:
         raise ValueError(f"{key} は文字列である必要があります")
     if not value.isascii():
         raise ValueError(f"{key} は ASCII 文字列である必要があります")
+    return value
+
+
+def _optional_display_code(data: dict[str, Any], key: str) -> str:
+    value = data.get(key, "")
+    if value == "":
+        return ""
+    if not isinstance(value, str):
+        raise ValueError(f"{key} は文字列である必要があります")
+    if not value.isascii():
+        raise ValueError(f"{key} は ASCII 文字列である必要があります")
+    if len(value) != 3:
+        raise ValueError(f"{key} は 3 文字である必要があります")
     return value
 
 

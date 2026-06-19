@@ -26,6 +26,7 @@ def make_reading(
     sort_order: int = 1000,
     short_name: str = "増田川",
     short_name_ascii: str = "MASUDA",
+    display_code: str = "MDS",
     sensor_type: str = "water",
     temperature_c: float | None = 23.187,
     min_temperature: float | None = 18.0,
@@ -52,6 +53,7 @@ def make_reading(
         sort_order=sort_order,
         short_name=short_name,
         short_name_ascii=short_name_ascii,
+        display_code=display_code,
     )
 
 
@@ -86,6 +88,7 @@ class ApiTests(unittest.TestCase):
         self.assertEqual(sensors[0]["sort_order"], 10)
         self.assertEqual(sensors[0]["short_name"], "増田川")
         self.assertEqual(sensors[0]["short_name_ascii"], "MASUDA")
+        self.assertEqual(sensors[0]["display_code"], "MDS")
         self.assertEqual(sensors[1]["sensor_id"], "28-second")
 
     def test_summary_returns_status_counts(self) -> None:
@@ -119,6 +122,7 @@ class ApiTests(unittest.TestCase):
                         max=28.0,
                         sort_order=20,
                         short_name_ascii="B",
+                        display_code="BBB",
                     ),
                     "28-first": SensorConfig(
                         sensor_id="28-first",
@@ -132,6 +136,7 @@ class ApiTests(unittest.TestCase):
                         visible=False,
                         sort_order=10,
                         short_name_ascii="A",
+                        display_code="AAA",
                     ),
                 },
             ),
@@ -146,6 +151,7 @@ class ApiTests(unittest.TestCase):
         self.assertEqual(sensors[0]["offset"], 0.1)
         self.assertEqual(sensors[0]["short_name"], "A")
         self.assertEqual(sensors[0]["short_name_ascii"], "A")
+        self.assertEqual(sensors[0]["display_code"], "AAA")
 
     def test_monitoring_compact_returns_ok_for_safe_aquariums(self) -> None:
         response = handle_api_request(
@@ -157,6 +163,7 @@ class ApiTests(unittest.TestCase):
                         name="めだか水槽",
                         short_name="めだか",
                         short_name_ascii="MEDAKA",
+                        display_code="MDK",
                         temperature_c=21.4,
                         sort_order=20,
                     ),
@@ -165,6 +172,7 @@ class ApiTests(unittest.TestCase):
                         name="増田川水槽",
                         short_name="増田川",
                         short_name_ascii="MASUDA",
+                        display_code="MDS",
                         temperature_c=21.4,
                         sort_order=10,
                     ),
@@ -181,6 +189,7 @@ class ApiTests(unittest.TestCase):
         self.assertEqual([tank["sensor_id"] for tank in tanks], ["28-first", "28-second"])
         self.assertEqual(tanks[0]["short_name"], "増田川")
         self.assertEqual(tanks[0]["short_name_ascii"], "MASUDA")
+        self.assertEqual(tanks[0]["display_code"], "MDS")
         self.assertEqual(tanks[0]["temperature_c"], 21.4)
         self.assertEqual(tanks[0]["status"], "safety")
         self.assertFalse(tanks[0]["alert"])
@@ -197,6 +206,7 @@ class ApiTests(unittest.TestCase):
                         name="めだか水槽",
                         short_name="めだか",
                         short_name_ascii="MEDAKA",
+                        display_code="MDK",
                         temperature_c=29.2,
                         sort_order=20,
                     ),
@@ -205,6 +215,7 @@ class ApiTests(unittest.TestCase):
                         name="増田川水槽",
                         short_name="増田川",
                         short_name_ascii="MASUDA",
+                        display_code="MDS",
                         temperature_c=21.4,
                         sort_order=10,
                     ),
@@ -216,6 +227,8 @@ class ApiTests(unittest.TestCase):
         self.assertIn("generated_at", response.payload)
         tanks = response.payload["tanks"]
         self.assertEqual([tank["sensor_id"] for tank in tanks], ["28-safe", "28-warning"])
+        self.assertEqual(tanks[0]["display_code"], "MDS")
+        self.assertEqual(tanks[1]["display_code"], "MDK")
         self.assertEqual(tanks[0]["status"], "safety")
         self.assertFalse(tanks[0]["alert"])
         self.assertEqual(tanks[1]["status"], "warning")
@@ -329,11 +342,12 @@ class ApiTests(unittest.TestCase):
     def test_monitoring_compact_allows_missing_short_name_ascii(self) -> None:
         response = handle_api_request(
             "/api/monitoring/compact",
-            make_state([make_reading(short_name_ascii="")]),
+            make_state([make_reading(short_name_ascii="", display_code="")]),
         )
 
         self.assertEqual(response.status, HTTPStatus.OK)
         self.assertEqual(response.payload["tanks"][0]["short_name_ascii"], "")
+        self.assertEqual(response.payload["tanks"][0]["display_code"], "")
 
     def test_monitoring_compact_returns_empty_unknown_when_no_aquariums(self) -> None:
         response = handle_api_request(
@@ -366,6 +380,7 @@ class ApiTests(unittest.TestCase):
         self.assertEqual(response.status, HTTPStatus.OK)
         self.assertEqual(response.payload["sensor_id"], "28-00000020f5ed")
         self.assertEqual(response.payload["name"], "増田川水槽")
+        self.assertEqual(response.payload["display_code"], "MDS")
         self.assertEqual(response.payload["temperature_c"], 23.187)
         self.assertEqual(response.payload["status"], "ok")
 

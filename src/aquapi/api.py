@@ -475,6 +475,7 @@ def build_sensor_detail_payload(reading: ConfiguredSensorReading) -> dict[str, o
         "sort_order": reading.sort_order,
         "short_name": reading.short_name,
         "short_name_ascii": reading.short_name_ascii,
+        "display_code": reading.display_code,
         "temperature_c": reading.temperature_c,
         "status": reading.status,
     }
@@ -595,6 +596,7 @@ def _compact_tank(reading: ConfiguredSensorReading) -> dict[str, object]:
         "name": reading.name,
         "short_name": reading.short_name,
         "short_name_ascii": reading.short_name_ascii,
+        "display_code": reading.display_code,
         "temperature_c": reading.temperature_c,
         "status": status,
         "alert": status in {"warning", "danger", "unknown"},
@@ -771,6 +773,7 @@ def _sensor_config_to_dict(sensor_config: SensorConfig) -> dict[str, object]:
         "sort_order": sensor_config.sort_order,
         "short_name": sensor_config.short_name,
         "short_name_ascii": sensor_config.short_name_ascii,
+        "display_code": sensor_config.display_code,
         "min": sensor_config.min,
         "max": sensor_config.max,
         "offset": sensor_config.offset,

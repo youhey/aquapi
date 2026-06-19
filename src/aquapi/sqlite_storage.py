@@ -13,7 +13,7 @@ from aquapi.sensors import ConfiguredSensorReading
 from aquapi.weather import WeatherHourlyReading
 
 
-SCHEMA_VERSION = "4"
+SCHEMA_VERSION = "5"
 
 
 @dataclass(frozen=True)
@@ -47,6 +47,7 @@ class SQLiteStorage:
                       name TEXT NOT NULL,
                       short_name TEXT,
                       short_name_ascii TEXT,
+                      display_code TEXT,
                       type TEXT NOT NULL,
                       role TEXT NOT NULL DEFAULT 'unknown',
                       enabled INTEGER NOT NULL DEFAULT 1,
@@ -148,6 +149,7 @@ class SQLiteStorage:
                       name,
                       short_name,
                       short_name_ascii,
+                      display_code,
                       type,
                       role,
                       enabled,
@@ -159,11 +161,12 @@ class SQLiteStorage:
                       created_at,
                       updated_at
                     )
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     ON CONFLICT(device_id) DO UPDATE SET
                       name = excluded.name,
                       short_name = excluded.short_name,
                       short_name_ascii = excluded.short_name_ascii,
+                      display_code = excluded.display_code,
                       type = excluded.type,
                       role = excluded.role,
                       enabled = excluded.enabled,
@@ -687,6 +690,7 @@ def _sensor_config_row(sensor_config: SensorConfig, now: int) -> tuple[object, .
         sensor_config.name,
         sensor_config.short_name,
         sensor_config.short_name_ascii,
+        sensor_config.display_code,
         sensor_config.type,
         sensor_config.role,
         1 if sensor_config.enabled else 0,
@@ -705,6 +709,7 @@ def _migrate_sensors_table(conn: sqlite3.Connection) -> None:
     migrations = {
         "short_name": "ALTER TABLE sensors ADD COLUMN short_name TEXT",
         "short_name_ascii": "ALTER TABLE sensors ADD COLUMN short_name_ascii TEXT",
+        "display_code": "ALTER TABLE sensors ADD COLUMN display_code TEXT",
         "role": "ALTER TABLE sensors ADD COLUMN role TEXT NOT NULL DEFAULT 'unknown'",
         "enabled": "ALTER TABLE sensors ADD COLUMN enabled INTEGER NOT NULL DEFAULT 1",
         "visible": "ALTER TABLE sensors ADD COLUMN visible INTEGER NOT NULL DEFAULT 1",
@@ -723,6 +728,7 @@ def _ensure_sensor(conn: sqlite3.Connection, reading: ConfiguredSensorReading, n
           name,
           short_name,
           short_name_ascii,
+          display_code,
           type,
           role,
           enabled,
@@ -734,11 +740,12 @@ def _ensure_sensor(conn: sqlite3.Connection, reading: ConfiguredSensorReading, n
           created_at,
           updated_at
         )
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         ON CONFLICT(device_id) DO UPDATE SET
           name = excluded.name,
           short_name = excluded.short_name,
           short_name_ascii = excluded.short_name_ascii,
+          display_code = excluded.display_code,
           type = excluded.type,
           role = excluded.role,
           enabled = excluded.enabled,
@@ -754,6 +761,7 @@ def _ensure_sensor(conn: sqlite3.Connection, reading: ConfiguredSensorReading, n
             reading.name,
             reading.short_name,
             reading.short_name_ascii,
+            reading.display_code,
             reading.type,
             reading.role,
             1 if reading.enabled else 0,
