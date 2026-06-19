@@ -16,7 +16,7 @@ from aquapi.config import (
     TemperatureAlertConfig,
 )
 from aquapi.environment import EnvironmentReading
-from aquapi.fans import FanState
+from aquapi.fans import FanState, FanStateStore
 from aquapi.leak import LeakReading
 from aquapi.logs import write_readings
 from aquapi.sqlite_storage import SQLiteStorage
@@ -151,7 +151,10 @@ class ApiTests(unittest.TestCase):
         self.assertEqual(tank["temperature_alert"]["too_hot_c"], 30.0)
         self.assertEqual(tank["fan_control"]["fan_id"], "fan_1")
         self.assertEqual(tank["fan_control"]["state"], "on")
+        self.assertEqual(tank["fan_mode"], "auto")
+        self.assertEqual(tank["fan_reason"], "temperature_above_start")
         self.assertEqual(response.payload["fans"][0]["state"], "on")
+        self.assertEqual(response.payload["fans"][0]["mode"], "auto")
 
     def test_sensors_returns_configured_sensor_master_in_sort_order(self) -> None:
         response = handle_api_request(
@@ -270,7 +273,146 @@ class ApiTests(unittest.TestCase):
         self.assertEqual(tank["temperature_alert_state"], "ok")
         self.assertEqual(tank["fan_id"], "fan_1")
         self.assertEqual(tank["fan_state"], "on")
-        self.assertEqual(response.payload["fans"], [{"id": "fan_1", "state": "on", "enabled": True}])
+        self.assertEqual(tank["fan_mode"], "auto")
+        self.assertEqual(response.payload["fans"], [{"id": "fan_1", "state": "on", "mode": "auto", "enabled": True}])
+
+    def test_fans_endpoint_returns_current_mode_and_bound_tank_metadata(self) -> None:
+        response = handle_api_request(
+            "/api/fans",
+            make_state(
+                [
+                    make_reading(
+                        temperature_c=28.1,
+                        fan_control=FanControlConfig(
+                            enabled=True,
+                            fan_id="fan_1",
+                            start_c=28.0,
+                            stop_c=27.5,
+                        ),
+                    )
+                ],
+                sensors=make_bound_sensor_configs(),
+                fans=make_fans(),
+                fan_states=[make_fan_state(state="on", reason="temperature_above_start")],
+            ),
+        )
+
+        self.assertEqual(response.status, HTTPStatus.OK)
+        fan = response.payload["fans"][0]
+        self.assertEqual(fan["id"], "fan_1")
+        self.assertEqual(fan["mode"], "auto")
+        self.assertEqual(fan["state"], "on")
+        self.assertEqual(fan["bound_tank_id"], "28-00000020f5ed")
+        self.assertEqual(fan["bound_tank_name"], "増田川水槽")
+        self.assertEqual(fan["bound_tank_display_code"], "MDS")
+
+    def test_fan_manual_control_api_persists_manual_on_mode(self) -> None:
+        with TemporaryDirectory() as tmp_dir:
+            store = FanStateStore(Path(tmp_dir) / "fan-state.json")
+            state = make_state(
+                [
+                    make_reading(
+                        temperature_c=20.0,
+                        fan_control=FanControlConfig(
+                            enabled=True,
+                            fan_id="fan_1",
+                            start_c=28.0,
+                            stop_c=27.5,
+                        ),
+                    )
+                ],
+                sensors=make_bound_sensor_configs(),
+                fans=make_fans(),
+                fan_state_store=store,
+            )
+
+            response = handle_api_request("/api/fans/fan_1/manual-on", state, method="POST")
+            loaded = store.load(state.config)["fan_1"]
+
+        self.assertEqual(response.status, HTTPStatus.OK)
+        self.assertEqual(response.payload["fan"]["mode"], "manual_on")
+        self.assertEqual(response.payload["fan"]["state"], "on")
+        self.assertEqual(response.payload["fan"]["reason"], "manual_on")
+        self.assertEqual(loaded.mode, "manual_on")
+
+    def test_fan_manual_control_api_persists_manual_off_mode(self) -> None:
+        with TemporaryDirectory() as tmp_dir:
+            store = FanStateStore(Path(tmp_dir) / "fan-state.json")
+            state = make_state(
+                [
+                    make_reading(
+                        temperature_c=30.0,
+                        fan_control=FanControlConfig(
+                            enabled=True,
+                            fan_id="fan_1",
+                            start_c=28.0,
+                            stop_c=27.5,
+                        ),
+                    )
+                ],
+                sensors=make_bound_sensor_configs(),
+                fans=make_fans(),
+                fan_state_store=store,
+            )
+
+            response = handle_api_request("/api/fans/fan_1/manual-off", state, method="POST")
+            loaded = store.load(state.config)["fan_1"]
+
+        self.assertEqual(response.status, HTTPStatus.OK)
+        self.assertEqual(response.payload["fan"]["mode"], "manual_off")
+        self.assertEqual(response.payload["fan"]["state"], "off")
+        self.assertEqual(response.payload["fan"]["reason"], "manual_off")
+        self.assertEqual(loaded.mode, "manual_off")
+
+    def test_fan_auto_api_resumes_temperature_control(self) -> None:
+        with TemporaryDirectory() as tmp_dir:
+            store = FanStateStore(Path(tmp_dir) / "fan-state.json")
+            state = make_state(
+                [
+                    make_reading(
+                        temperature_c=27.5,
+                        fan_control=FanControlConfig(
+                            enabled=True,
+                            fan_id="fan_1",
+                            start_c=28.0,
+                            stop_c=27.5,
+                        ),
+                    )
+                ],
+                sensors=make_bound_sensor_configs(),
+                fans=make_fans(),
+                fan_state_store=store,
+            )
+            handle_api_request("/api/fans/fan_1/manual-on", state, method="POST")
+
+            response = handle_api_request("/api/fans/fan_1/auto", state, method="POST")
+            loaded = store.load(state.config)["fan_1"]
+
+        self.assertEqual(response.status, HTTPStatus.OK)
+        self.assertEqual(response.payload["fan"]["mode"], "auto")
+        self.assertEqual(response.payload["fan"]["state"], "off")
+        self.assertEqual(response.payload["fan"]["reason"], "temperature_below_stop")
+        self.assertEqual(loaded.mode, "auto")
+
+    def test_fan_manual_control_api_returns_404_for_missing_fan(self) -> None:
+        response = handle_api_request(
+            "/api/fans/not_found/manual-on",
+            make_state([], fans=make_fans()),
+            method="POST",
+        )
+
+        self.assertEqual(response.status, HTTPStatus.NOT_FOUND)
+        self.assertEqual(response.payload["error"], "fan_not_found")
+
+    def test_fan_manual_on_api_rejects_disabled_fan(self) -> None:
+        response = handle_api_request(
+            "/api/fans/fan_1/manual-on",
+            make_state([], fans=make_fans(enabled=False)),
+            method="POST",
+        )
+
+        self.assertEqual(response.status, HTTPStatus.CONFLICT)
+        self.assertEqual(response.payload["error"], "fan_disabled")
 
     def test_tanks_latest_returns_only_visible_aquarium_status(self) -> None:
         response = handle_api_request(
@@ -783,6 +925,7 @@ def make_state(
     sensors: dict[str, SensorConfig] | None = None,
     fans: dict[str, FanConfig] | None = None,
     fan_states: list[FanState] | None = None,
+    fan_state_store: FanStateStore | None = None,
     environment_sensors: dict[str, EnvironmentSensorConfig] | None = None,
     leak_sensors: dict[str, "LeakSensorConfig"] | None = None,
     leak_readings: list[LeakReading] | None = None,
@@ -807,6 +950,7 @@ def make_state(
         readings_provider=lambda: readings,
         leak_provider=leak_provider if leak_readings is not None or leak_provider_raises else None,
         fan_state_provider=(lambda: fan_states or []) if fan_states is not None else None,
+        fan_state_store=fan_state_store,
     )
 
 
@@ -820,14 +964,35 @@ def make_logging_config(data_dir: Path) -> LoggingConfig:
     )
 
 
-def make_fans() -> dict[str, FanConfig]:
+def make_fans(*, enabled: bool = True) -> dict[str, FanConfig]:
     return {
         "fan_1": FanConfig(
             fan_id="fan_1",
             name="Fan 1",
             gpio=22,
             active_high=True,
+            enabled=enabled,
+        )
+    }
+
+
+def make_bound_sensor_configs() -> dict[str, SensorConfig]:
+    return {
+        "28-00000020f5ed": SensorConfig(
+            sensor_id="28-00000020f5ed",
+            name="増田川水槽",
+            type="water",
+            offset=0.0,
+            min=18.0,
+            max=28.0,
+            role="aquarium",
             enabled=True,
+            visible=True,
+            sort_order=10,
+            short_name="増田川",
+            short_name_ascii="MASUDA",
+            display_code="MDS",
+            fan_control=FanControlConfig(enabled=True, fan_id="fan_1", start_c=28.0, stop_c=27.5),
         )
     }
 

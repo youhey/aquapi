@@ -16,6 +16,10 @@ FAN_ON = "on"
 FAN_OFF = "off"
 FAN_UNKNOWN = "unknown"
 FAN_DISABLED = "disabled"
+FAN_MODE_AUTO = "auto"
+FAN_MODE_MANUAL_ON = "manual_on"
+FAN_MODE_MANUAL_OFF = "manual_off"
+FAN_MODES = {FAN_MODE_AUTO, FAN_MODE_MANUAL_ON, FAN_MODE_MANUAL_OFF}
 AUTOMATIC_KEEP_ON_REASONS = {"temperature_above_start", "within_hysteresis_keep_on"}
 
 
@@ -29,10 +33,25 @@ class FanState:
     state: str
     bound_tank_id: str | None
     reason: str
+    mode: str = FAN_MODE_AUTO
     last_changed_at: datetime | None = None
     temperature_c: float | None = None
     threshold_c: float | None = None
     error: str | None = None
+
+
+@dataclass(frozen=True)
+class FanModeChange:
+    previous: FanState | None
+    current: FanState
+    states: list[FanState]
+
+
+class FanModeError(ValueError):
+    def __init__(self, code: str, message: str):
+        super().__init__(message)
+        self.code = code
+        self.message = message
 
 
 def fan_state_to_dict(state: FanState) -> dict[str, object]:
@@ -42,6 +61,7 @@ def fan_state_to_dict(state: FanState) -> dict[str, object]:
         "gpio": state.gpio,
         "active_high": state.active_high,
         "enabled": state.enabled,
+        "mode": state.mode,
         "state": state.state,
         "bound_tank_id": state.bound_tank_id,
         "reason": state.reason,
@@ -86,6 +106,7 @@ class FanStateStore:
                 active_high=fan_config.active_high,
                 enabled=fan_config.enabled,
                 state=_str_or_default(raw_state.get("state"), FAN_UNKNOWN),
+                mode=_fan_mode_or_default(raw_state.get("mode"), raw_state.get("reason")),
                 bound_tank_id=_optional_str(raw_state.get("bound_tank_id")),
                 reason=_str_or_default(raw_state.get("reason"), "startup_off"),
                 last_changed_at=_parse_datetime(raw_state.get("last_changed_at")),
@@ -212,6 +233,7 @@ class FanController:
                 active_high=fan.active_high,
                 enabled=fan.enabled,
                 state=FAN_DISABLED if not fan.enabled else FAN_OFF,
+                mode=previous.get(fan.fan_id).mode if previous.get(fan.fan_id) is not None else FAN_MODE_AUTO,
                 bound_tank_id=_bound_tank_id(self.config, fan.fan_id),
                 reason="shutdown_off",
                 last_changed_at=current,
@@ -280,6 +302,7 @@ def fan_control_payload(
         "enabled": fan_control.enabled,
         "fan_id": fan_control.fan_id,
         "state": fan_state.state if fan_state is not None else ("disabled" if not fan_control.enabled else "unknown"),
+        "mode": fan_state.mode if fan_state is not None else FAN_MODE_AUTO,
         "start_c": fan_control.start_c,
         "stop_c": fan_control.stop_c,
         "reason": fan_state.reason if fan_state is not None else _fan_control_default_reason(reading),
@@ -290,6 +313,7 @@ def compact_fan_payload(state: FanState) -> dict[str, object]:
     return {
         "id": state.fan_id,
         "state": state.state,
+        "mode": state.mode,
         "enabled": state.enabled,
     }
 
@@ -329,6 +353,9 @@ def set_manual_fan_state(config: AppConfig, fan_id: str, state: str) -> int:
     if fan is None:
         print(f"error: fan not found: {fan_id}", file=sys.stderr)
         return 1
+    if not fan.enabled and state == FAN_ON:
+        print(f"error: fan is disabled: {fan_id}", file=sys.stderr)
+        return 1
     driver = GpioFanDriver(config.configured_fans())
     if not driver.available:
         print(f"error: fan gpio unavailable: {driver.error}", file=sys.stderr)
@@ -353,6 +380,7 @@ def set_manual_fan_state(config: AppConfig, fan_id: str, state: str) -> int:
                         active_high=fan_config.active_high,
                         enabled=fan_config.enabled,
                         state=state,
+                        mode=FAN_MODE_MANUAL_ON if state == FAN_ON else FAN_MODE_MANUAL_OFF,
                         bound_tank_id=_bound_tank_id(config, fan_config.fan_id),
                         reason="manual_on" if state == FAN_ON else "manual_off",
                         last_changed_at=current,
@@ -365,6 +393,46 @@ def set_manual_fan_state(config: AppConfig, fan_id: str, state: str) -> int:
         return 0
     finally:
         driver.close(turn_off=state != FAN_ON)
+
+
+def set_fan_mode(
+    config: AppConfig,
+    fan_id: str,
+    mode: str,
+    readings: list[ConfiguredSensorReading],
+    *,
+    state_store: FanStateStore | None = None,
+    now: datetime | None = None,
+    event_reason: str = "api",
+) -> FanModeChange:
+    fan = config.configured_fans().get(fan_id)
+    if fan is None:
+        raise FanModeError("fan_not_found", f"Fan not found: {fan_id}")
+    if mode not in FAN_MODES:
+        raise FanModeError("invalid_fan_mode", f"Invalid fan mode: {mode}")
+    if mode == FAN_MODE_MANUAL_ON and not fan.enabled:
+        raise FanModeError("fan_disabled", f"Fan is disabled: {fan_id}")
+
+    current = now or datetime.now().astimezone()
+    store = state_store or FanStateStore(default_fan_state_path(config))
+    previous = store.load(config)
+    previous_state = previous.get(fan_id)
+    previous_for_build = dict(previous)
+    previous_for_build[fan_id] = _state_with_mode(
+        previous_state or _base_state(fan, FAN_OFF, _bound_tank_id(config, fan_id), "startup_off", current),
+        mode,
+        current,
+    )
+    states = build_fan_states(config, readings, previous_states=previous_for_build, now=current)
+    current_state = fan_states_by_id(states).get(fan_id)
+    if current_state is None:
+        current_state = _base_state(fan, FAN_DISABLED if not fan.enabled else FAN_OFF, None, "startup_off", current)
+        states.append(current_state)
+        states = sorted(states, key=lambda item: item.fan_id)
+
+    _log_mode_change(previous_state, current_state, event_reason)
+    store.save(states)
+    return FanModeChange(previous=previous_state, current=current_state, states=states)
 
 
 def _readings_by_fan(
@@ -385,11 +453,30 @@ def _fan_state_for_reading(
     previous: FanState | None,
     now: datetime,
 ) -> FanState:
+    previous_mode = previous.mode if previous is not None else FAN_MODE_AUTO
     if reading is None:
-        return _base_state(fan, FAN_DISABLED if not fan.enabled else FAN_OFF, None, "startup_off", now)
+        bound_tank_id = previous.bound_tank_id if previous is not None else None
+        if not fan.enabled:
+            return _base_state(fan, FAN_DISABLED, bound_tank_id, "fan_disabled", now, mode=previous_mode)
+        if previous_mode == FAN_MODE_MANUAL_ON:
+            return _base_state(fan, FAN_ON, bound_tank_id, "manual_on", now, mode=FAN_MODE_MANUAL_ON)
+        if previous_mode == FAN_MODE_MANUAL_OFF:
+            return _base_state(fan, FAN_OFF, bound_tank_id, "manual_off", now, mode=FAN_MODE_MANUAL_OFF)
+        return _base_state(
+            fan,
+            FAN_OFF,
+            bound_tank_id,
+            "startup_off",
+            now,
+            mode=previous_mode,
+        )
     fan_control = reading.fan_control
     if not fan.enabled:
-        return _base_state(fan, FAN_DISABLED, reading.sensor_id, "fan_disabled", now)
+        return _base_state(fan, FAN_DISABLED, reading.sensor_id, "fan_disabled", now, mode=previous_mode)
+    if previous_mode == FAN_MODE_MANUAL_ON:
+        return _base_state(fan, FAN_ON, reading.sensor_id, "manual_on", now, mode=FAN_MODE_MANUAL_ON)
+    if previous_mode == FAN_MODE_MANUAL_OFF:
+        return _base_state(fan, FAN_OFF, reading.sensor_id, "manual_off", now, mode=FAN_MODE_MANUAL_OFF)
     if not fan_control.enabled:
         return _base_state(fan, FAN_OFF, reading.sensor_id, "tank_fan_control_disabled", now)
     if reading.temperature_c is None or reading.error is not None or not reading.crc_ok:
@@ -442,6 +529,7 @@ def _base_state(
     reason: str,
     now: datetime,
     *,
+    mode: str = FAN_MODE_AUTO,
     temperature_c: float | None = None,
     threshold_c: float | None = None,
 ) -> FanState:
@@ -452,6 +540,7 @@ def _base_state(
         active_high=fan.active_high,
         enabled=fan.enabled,
         state=state,
+        mode=mode,
         bound_tank_id=bound_tank_id,
         reason=reason,
         last_changed_at=now,
@@ -475,12 +564,41 @@ def _replace_state(
         active_high=fan_state.active_high,
         enabled=fan_state.enabled,
         state=new_state,
+        mode=fan_state.mode,
         bound_tank_id=fan_state.bound_tank_id,
         reason=reason,
         last_changed_at=now,
         temperature_c=fan_state.temperature_c,
         threshold_c=fan_state.threshold_c,
         error=error,
+    )
+
+
+def _state_with_mode(fan_state: FanState, mode: str, now: datetime) -> FanState:
+    target_state = fan_state.state
+    reason = fan_state.reason
+    if mode == FAN_MODE_MANUAL_ON:
+        target_state = FAN_ON
+        reason = "manual_on"
+    elif mode == FAN_MODE_MANUAL_OFF:
+        target_state = FAN_DISABLED if not fan_state.enabled else FAN_OFF
+        reason = "fan_disabled" if not fan_state.enabled else "manual_off"
+    elif mode == FAN_MODE_AUTO:
+        reason = "startup_off" if fan_state.reason in {"manual_on", "manual_off"} else fan_state.reason
+    return FanState(
+        fan_id=fan_state.fan_id,
+        name=fan_state.name,
+        gpio=fan_state.gpio,
+        active_high=fan_state.active_high,
+        enabled=fan_state.enabled,
+        state=target_state,
+        bound_tank_id=fan_state.bound_tank_id,
+        reason=reason,
+        mode=mode,
+        last_changed_at=now,
+        temperature_c=fan_state.temperature_c,
+        threshold_c=fan_state.threshold_c,
+        error=fan_state.error,
     )
 
 
@@ -498,7 +616,12 @@ def _bound_tank_id(config: AppConfig, fan_id: str) -> str | None:
 
 
 def _log_state_change(previous: FanState | None, current: FanState) -> None:
-    if previous is not None and previous.state == current.state and previous.reason == current.reason:
+    if (
+        previous is not None
+        and previous.state == current.state
+        and previous.mode == current.mode
+        and previous.reason == current.reason
+    ):
         return
     event = {
         "measured_at": datetime.now().astimezone().isoformat(timespec="seconds"),
@@ -507,9 +630,28 @@ def _log_state_change(previous: FanState | None, current: FanState) -> None:
         "tank_id": current.bound_tank_id,
         "from": previous.state if previous is not None else None,
         "to": current.state,
+        "from_mode": previous.mode if previous is not None else None,
+        "to_mode": current.mode,
         "reason": current.reason,
         "temperature_c": current.temperature_c,
         "threshold_c": current.threshold_c,
+    }
+    print(json.dumps(event, ensure_ascii=False, separators=(",", ":")), file=sys.stderr)
+
+
+def _log_mode_change(previous: FanState | None, current: FanState, reason: str) -> None:
+    if previous is not None and previous.mode == current.mode and previous.state == current.state:
+        return
+    event = {
+        "measured_at": datetime.now().astimezone().isoformat(timespec="seconds"),
+        "event": "fan_mode_changed",
+        "fan_id": current.fan_id,
+        "tank_id": current.bound_tank_id,
+        "from_mode": previous.mode if previous is not None else None,
+        "to_mode": current.mode,
+        "from_state": previous.state if previous is not None else None,
+        "to_state": current.state,
+        "reason": reason,
     }
     print(json.dumps(event, ensure_ascii=False, separators=(",", ":")), file=sys.stderr)
 
@@ -535,6 +677,16 @@ def _optional_str(value: object) -> str | None:
 
 def _str_or_default(value: object, default: str) -> str:
     return value if isinstance(value, str) and value else default
+
+
+def _fan_mode_or_default(value: object, reason: object) -> str:
+    if isinstance(value, str) and value in FAN_MODES:
+        return value
+    if reason == "manual_on":
+        return FAN_MODE_MANUAL_ON
+    if reason == "manual_off":
+        return FAN_MODE_MANUAL_OFF
+    return FAN_MODE_AUTO
 
 
 def _optional_float(value: object) -> float | None:

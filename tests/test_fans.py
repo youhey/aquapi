@@ -1,8 +1,22 @@
+import json
 from datetime import datetime, timezone
+from pathlib import Path
+from tempfile import TemporaryDirectory
 import unittest
 
 from aquapi.config import AppConfig, FanConfig, FanControlConfig, SensorConfig, TemperatureAlertConfig
-from aquapi.fans import FAN_OFF, FAN_ON, FanState, build_fan_states, temperature_alert_state
+from aquapi.fans import (
+    FAN_MODE_AUTO,
+    FAN_MODE_MANUAL_OFF,
+    FAN_MODE_MANUAL_ON,
+    FAN_OFF,
+    FAN_ON,
+    FanState,
+    FanStateStore,
+    build_fan_states,
+    set_fan_mode,
+    temperature_alert_state,
+)
 from aquapi.sensors import ConfiguredSensorReading
 
 
@@ -88,6 +102,108 @@ class FanTests(unittest.TestCase):
 
         self.assertEqual(state.state, FAN_OFF)
         self.assertEqual(state.reason, "within_hysteresis_keep_off")
+
+    def test_build_fan_states_keeps_manual_on_mode_regardless_of_temperature(self) -> None:
+        config = make_config()
+        previous_manual_on = {
+            "fan_1": FanState(
+                fan_id="fan_1",
+                name="Fan 1",
+                gpio=22,
+                active_high=True,
+                enabled=True,
+                state=FAN_ON,
+                bound_tank_id="28-1",
+                reason="manual_on",
+                mode=FAN_MODE_MANUAL_ON,
+            )
+        }
+
+        state = build_fan_states(
+            config,
+            [make_reading(temperature_c=20.0)],
+            previous_states=previous_manual_on,
+            now=NOW,
+        )[0]
+
+        self.assertEqual(state.state, FAN_ON)
+        self.assertEqual(state.mode, FAN_MODE_MANUAL_ON)
+        self.assertEqual(state.reason, "manual_on")
+
+    def test_build_fan_states_keeps_manual_off_mode_regardless_of_temperature(self) -> None:
+        config = make_config()
+        previous_manual_off = {
+            "fan_1": FanState(
+                fan_id="fan_1",
+                name="Fan 1",
+                gpio=22,
+                active_high=True,
+                enabled=True,
+                state=FAN_OFF,
+                bound_tank_id="28-1",
+                reason="manual_off",
+                mode=FAN_MODE_MANUAL_OFF,
+            )
+        }
+
+        state = build_fan_states(
+            config,
+            [make_reading(temperature_c=30.0)],
+            previous_states=previous_manual_off,
+            now=NOW,
+        )[0]
+
+        self.assertEqual(state.state, FAN_OFF)
+        self.assertEqual(state.mode, FAN_MODE_MANUAL_OFF)
+        self.assertEqual(state.reason, "manual_off")
+
+    def test_set_fan_mode_auto_resumes_temperature_control(self) -> None:
+        config = make_config()
+        with TemporaryDirectory() as tmp_dir:
+            store = FanStateStore(Path(tmp_dir) / "fan-state.json")
+            set_fan_mode(
+                config,
+                "fan_1",
+                FAN_MODE_MANUAL_ON,
+                [make_reading(temperature_c=20.0)],
+                state_store=store,
+                now=NOW,
+            )
+            result = set_fan_mode(
+                config,
+                "fan_1",
+                FAN_MODE_AUTO,
+                [make_reading(temperature_c=27.5)],
+                state_store=store,
+                now=NOW,
+            )
+
+        self.assertEqual(result.current.mode, FAN_MODE_AUTO)
+        self.assertEqual(result.current.state, FAN_OFF)
+        self.assertEqual(result.current.reason, "temperature_below_stop")
+
+    def test_state_store_infers_legacy_manual_reason_as_mode(self) -> None:
+        config = make_config()
+        with TemporaryDirectory() as tmp_dir:
+            path = Path(tmp_dir) / "fan-state.json"
+            path.write_text(
+                json.dumps(
+                    {
+                        "fans": [
+                            {
+                                "id": "fan_1",
+                                "state": "on",
+                                "reason": "manual_on",
+                            }
+                        ]
+                    }
+                ),
+                encoding="utf-8",
+            )
+
+            state = FanStateStore(path).load(config)["fan_1"]
+
+        self.assertEqual(state.mode, FAN_MODE_MANUAL_ON)
 
     def test_build_fan_states_turns_off_when_temperature_unknown(self) -> None:
         state = build_fan_states(make_config(), [make_reading(temperature_c=None, crc_ok=False)], now=NOW)[0]

@@ -10,12 +10,14 @@ from aquapi.api import serve_api
 from aquapi.config import AppConfig, load_config
 from aquapi.environment import EnvironmentReading, read_all_environment_sensors
 from aquapi.fans import (
+    FAN_MODE_AUTO,
     FAN_OFF,
     FAN_ON,
     FanStateStore,
     default_fan_state_path,
     fan_state_to_dict,
     run_fan_test,
+    set_fan_mode,
     set_manual_fan_state,
 )
 from aquapi.leak import leak_reading_to_dict, read_all_leak_sensors
@@ -84,6 +86,10 @@ def build_parser() -> argparse.ArgumentParser:
     fan_off_parser = subparsers.add_parser("fan:off", help="指定ファンを手動でOFFにします")
     fan_off_parser.add_argument("fan_id", help="fan id")
     fan_off_parser.add_argument("--config", type=Path, required=True, help="センサー設定 JSON のパス")
+
+    fan_auto_parser = subparsers.add_parser("fan:auto", help="指定ファンを自動制御に戻します")
+    fan_auto_parser.add_argument("fan_id", help="fan id")
+    fan_auto_parser.add_argument("--config", type=Path, required=True, help="センサー設定 JSON のパス")
 
     fan_test_parser = subparsers.add_parser("fan:test", help="設定済みファンを順番にON/OFFします")
     fan_test_parser.add_argument("--config", type=Path, required=True, help="センサー設定 JSON のパス")
@@ -193,6 +199,8 @@ def main(argv: list[str] | None = None) -> int:
         return run_fan_on(config_path=args.config, fan_id=args.fan_id)
     if args.command == "fan:off":
         return run_fan_off(config_path=args.config, fan_id=args.fan_id)
+    if args.command == "fan:auto":
+        return run_fan_auto(config_path=args.config, fan_id=args.fan_id)
     if args.command == "fan:test":
         return run_fan_test_command(config_path=args.config, sleep_seconds=args.sleep_seconds)
 
@@ -279,11 +287,16 @@ def run_fan_list(*, config_path: Path, as_json: bool) -> int:
         assert isinstance(fan, dict)
         state = fan.get("state")
         state_text = "-"
+        mode_text = "-"
         reason_text = "-"
         if isinstance(state, dict):
             state_text = str(state.get("state", "-"))
+            mode_text = str(state.get("mode", "-"))
             reason_text = str(state.get("reason", "-"))
-        print(f"{fan['id']} gpio={fan['gpio']} enabled={fan['enabled']} state={state_text} reason={reason_text}")
+        print(
+            f"{fan['id']} gpio={fan['gpio']} enabled={fan['enabled']} "
+            f"mode={mode_text} state={state_text} reason={reason_text}"
+        )
     return 0
 
 
@@ -299,6 +312,25 @@ def run_fan_off(*, config_path: Path, fan_id: str) -> int:
     if config is None:
         return 1
     return set_manual_fan_state(config, fan_id, FAN_OFF)
+
+
+def run_fan_auto(*, config_path: Path, fan_id: str) -> int:
+    config = _load_config(config_path)
+    if config is None:
+        return 1
+    try:
+        result = set_fan_mode(
+            config,
+            fan_id,
+            FAN_MODE_AUTO,
+            read_all_configured_sensors(config=config),
+            event_reason="cli_auto",
+        )
+    except ValueError as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        return 1
+    print(f"{fan_id} mode={result.current.mode} state={result.current.state} reason={result.current.reason}")
+    return 0
 
 
 def run_fan_test_command(*, config_path: Path, sleep_seconds: float) -> int:

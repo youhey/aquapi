@@ -11,14 +11,19 @@ from urllib.parse import parse_qs, unquote, urlparse
 
 from aquapi.config import AppConfig, SensorConfig
 from aquapi.fans import (
+    FAN_MODE_AUTO,
+    FAN_MODE_MANUAL_OFF,
+    FAN_MODE_MANUAL_ON,
     FanState,
     FanStateStore,
+    FanModeError,
     build_fan_states,
     compact_fan_payload,
     default_fan_state_path,
     fan_control_payload,
     fan_state_to_dict,
     fan_states_by_id,
+    set_fan_mode,
     temperature_alert_payload,
     temperature_alert_state,
 )
@@ -51,6 +56,7 @@ class ApiState:
     version: str = "dev"
     leak_provider: LeakProvider | None = None
     fan_state_provider: FanStateProvider | None = None
+    fan_state_store: FanStateStore | None = None
 
 
 @dataclass(frozen=True)
@@ -81,6 +87,16 @@ def create_handler(state: ApiState) -> type[BaseHTTPRequestHandler]:
             )
             self._send_json(response.status, response.payload)
 
+        def do_POST(self) -> None:
+            parsed = urlparse(self.path)
+            response = handle_api_request(
+                parsed.path,
+                state,
+                query={key: values[0] for key, values in parse_qs(parsed.query).items()},
+                method="POST",
+            )
+            self._send_json(response.status, response.payload)
+
         def log_message(self, format: str, *args: object) -> None:
             return
 
@@ -99,8 +115,17 @@ def handle_api_request(
     path: str,
     state: ApiState,
     query: dict[str, str] | None = None,
+    method: str = "GET",
 ) -> ApiResponse:
     params = query or {}
+
+    if method == "POST":
+        return _handle_post_request(path, state)
+    if method != "GET":
+        return ApiResponse(
+            HTTPStatus.METHOD_NOT_ALLOWED,
+            {"error": {"code": "method_not_allowed", "message": "method not allowed"}},
+        )
 
     if path == "/api/health":
         return ApiResponse(
@@ -128,6 +153,9 @@ def handle_api_request(
 
     if path == "/api/tanks/latest":
         return _handle_tanks_latest(state, params)
+
+    if path == "/api/fans":
+        return _handle_fans(state)
 
     if path == "/api/weather/latest":
         return _handle_weather_latest(state)
@@ -174,6 +202,66 @@ def handle_api_request(
                 "code": "not_found",
                 "message": "not found",
             }
+        },
+    )
+
+
+def _handle_post_request(path: str, state: ApiState) -> ApiResponse:
+    fan_prefix = "/api/fans/"
+    if path.startswith(fan_prefix):
+        parts = path.removeprefix(fan_prefix).split("/")
+        if len(parts) == 2:
+            fan_id = unquote(parts[0])
+            action = parts[1]
+            mode_by_action = {
+                "manual-on": FAN_MODE_MANUAL_ON,
+                "manual-off": FAN_MODE_MANUAL_OFF,
+                "auto": FAN_MODE_AUTO,
+            }
+            mode = mode_by_action.get(action)
+            if mode is not None:
+                return _handle_fan_mode_change(state, fan_id, mode, event_reason=f"api_{action.replace('-', '_')}")
+
+    return ApiResponse(
+        HTTPStatus.NOT_FOUND,
+        {"error": {"code": "not_found", "message": "not found"}},
+    )
+
+
+def _handle_fans(state: ApiState) -> ApiResponse:
+    readings = state.readings_provider()
+    fan_states = _fan_states_for_api(state, readings)
+    return ApiResponse(
+        HTTPStatus.OK,
+        {
+            "generated_at": _now_iso(),
+            "fans": [_fan_api_payload(state.config, fan_state) for fan_state in fan_states],
+        },
+    )
+
+
+def _handle_fan_mode_change(state: ApiState, fan_id: str, mode: str, *, event_reason: str) -> ApiResponse:
+    try:
+        readings = state.readings_provider()
+        result = set_fan_mode(
+            state.config,
+            fan_id,
+            mode,
+            readings,
+            state_store=_fan_state_store(state),
+            event_reason=event_reason,
+        )
+    except FanModeError as exc:
+        status = HTTPStatus.NOT_FOUND if exc.code == "fan_not_found" else HTTPStatus.CONFLICT
+        if exc.code == "invalid_fan_mode":
+            status = HTTPStatus.BAD_REQUEST
+        return ApiResponse(status, {"error": exc.code, "message": exc.message})
+
+    return ApiResponse(
+        HTTPStatus.OK,
+        {
+            "generated_at": _now_iso(),
+            "fan": _fan_api_payload(state.config, result.current),
         },
     )
 
@@ -643,6 +731,7 @@ def _tank_readings(
 
 
 def _summary_tank(reading: ConfiguredSensorReading, fan_states: dict[str, FanState]) -> dict[str, object]:
+    fan_state = fan_states.get(reading.fan_control.fan_id)
     return {
         "sensor_id": reading.sensor_id,
         "name": reading.name,
@@ -653,6 +742,10 @@ def _summary_tank(reading: ConfiguredSensorReading, fan_states: dict[str, FanSta
         "status": reading.status,
         "temperature_alert": temperature_alert_payload(reading),
         "fan_control": fan_control_payload(reading, fan_states),
+        "fan_id": reading.fan_control.fan_id,
+        "fan_state": fan_state.state if fan_state is not None else ("disabled" if not reading.fan_control.enabled else "unknown"),
+        "fan_mode": fan_state.mode if fan_state is not None else FAN_MODE_AUTO,
+        "fan_reason": fan_state.reason if fan_state is not None else _fan_default_reason(reading),
     }
 
 
@@ -675,6 +768,8 @@ def _compact_tank(
         "temperature_alert_state": temperature_alert_state(reading),
         "fan_id": reading.fan_control.fan_id,
         "fan_state": fan_state.state if fan_state is not None else ("disabled" if not reading.fan_control.enabled else "unknown"),
+        "fan_mode": fan_state.mode if fan_state is not None else FAN_MODE_AUTO,
+        "fan_reason": fan_state.reason if fan_state is not None else _fan_default_reason(reading),
         "alert": status in {"warning", "danger", "unknown"},
     }
 
@@ -880,6 +975,7 @@ def serve_api(
         config=config,
         readings_provider=readings_provider or create_readings_provider(config),
         fan_state_provider=create_fan_state_provider(config),
+        fan_state_store=FanStateStore(default_fan_state_path(config)),
     )
     server = ThreadingHTTPServer((listen_host, listen_port), create_handler(state))
     try:
@@ -910,4 +1006,30 @@ def _fan_states_for_api(state: ApiState, readings: list[ConfiguredSensorReading]
     previous_states: dict[str, FanState] = {}
     if state.fan_state_provider is not None:
         previous_states = fan_states_by_id(state.fan_state_provider())
+    else:
+        previous_states = _fan_state_store(state).load(state.config)
     return build_fan_states(state.config, readings, previous_states=previous_states)
+
+
+def _fan_state_store(state: ApiState) -> FanStateStore:
+    return state.fan_state_store or FanStateStore(default_fan_state_path(state.config))
+
+
+def _fan_api_payload(config: AppConfig, fan_state: FanState) -> dict[str, object]:
+    payload = fan_state_to_dict(fan_state)
+    sensor_config = _bound_sensor_config(config, fan_state.bound_tank_id)
+    payload["bound_tank_name"] = sensor_config.name if sensor_config is not None else None
+    payload["bound_tank_display_code"] = sensor_config.display_code if sensor_config is not None else None
+    return payload
+
+
+def _bound_sensor_config(config: AppConfig, sensor_id: str | None) -> SensorConfig | None:
+    if sensor_id is None:
+        return None
+    return config.sensors.get(sensor_id)
+
+
+def _fan_default_reason(reading: ConfiguredSensorReading) -> str:
+    if not reading.fan_control.enabled:
+        return "tank_fan_control_disabled"
+    return "startup_off"
