@@ -23,11 +23,12 @@
 - Open-Meteo 外部気象連携
 - SHT31 室内温度・湿度ロギング
 - GPIO 漏水センサー現在状態 API
+- 水槽ごとの温度アラート設定
+- GPIO ファン自動制御
 - systemd による API / collector の常駐
 
 未対応:
 
-- アラート
 - M5Stack 連携
 - netwatch-viewer 連携
 
@@ -120,7 +121,7 @@ cp configs/aquapi.example.json configs/aquapi.json
 
 `configs/aquapi.json` はローカル運用設定として `.gitignore` に含まれています。
 
-センサーIDごとに `name`、`short_name`、`short_name_ascii`、`display_code`、`type`、`role`、`enabled`、`visible`、`sort_order`、`offset`、`min`、`max` を設定します。
+センサーIDごとに `name`、`short_name`、`short_name_ascii`、`display_code`、`type`、`role`、`enabled`、`visible`、`sort_order`、`offset`、`min`、`max`、`temperature_alert`、`fan_control` を設定します。ファンを使う場合はトップレベルに `fans` を定義します。
 
 ```json
 {
@@ -143,6 +144,15 @@ cp configs/aquapi.example.json configs/aquapi.json
     "forecast_days": 2,
     "retention_days": 365
   },
+  "fans": [
+    {
+      "id": "fan_1",
+      "name": "Fan 1",
+      "gpio": 22,
+      "active_high": true,
+      "enabled": true
+    }
+  ],
   "environment_sensors": {
     "sht31_room": {
       "name": "室内",
@@ -189,7 +199,18 @@ cp configs/aquapi.example.json configs/aquapi.json
       "sort_order": 10,
       "offset": 0.0,
       "min": 18.0,
-      "max": 28.0
+      "max": 28.0,
+      "temperature_alert": {
+        "enabled": true,
+        "too_hot_c": 30.0,
+        "too_cold_c": 15.0
+      },
+      "fan_control": {
+        "enabled": true,
+        "fan_id": "fan_1",
+        "start_c": 28.0,
+        "stop_c": 27.5
+      }
     }
   }
 }
@@ -208,6 +229,12 @@ cp configs/aquapi.example.json configs/aquapi.json
 `short_name_ascii` は、日本語フォント対応が難しい M5Stack などの端末向けの ASCII 短縮名です。macOS Viewer などでは `short_name` / `name` を使い、M5Stack では `short_name_ascii`、`short_name`、`name`、`sensor_id` の順に表示名を選ぶ想定です。未指定時は ASCII の `short_name` または `name` から補完し、それもない場合は空文字になります。M5Stack で使うセンサーには明示設定を推奨します。
 
 `display_code` は、小型端末に詰めて表示するための 3 文字 ASCII コードです。未指定時は空文字です。設定する場合は `MDS`、`MDK`、`MIN`、`KNG`、`OUT` のように 3 文字で指定してください。
+
+`temperature_alert` は水槽ごとの温度アラート設定です。`enabled: true` の場合、`too_hot_c` 以上で `hot`、`too_cold_c` 以下で `cold`、温度取得失敗時は `unknown` になります。`too_hot_c` は `too_cold_c` より大きい必要があります。
+
+`fans` は Raspberry Pi BCM GPIO に接続したファン定義です。`active_high: true` では GPIO HIGH が ON、LOW が OFF です。GPIO22/23/24/25 は Fan 1〜4 の想定です。
+
+`fan_control` は水槽とファンの紐づけです。`start_c` 以上で ON、`stop_c` 以下で OFF、間の温度では直前状態を維持します。細かい On/Off を防ぐため、`start_c` は `stop_c` より大きくしてください。温度取得失敗時、`fan.enabled=false`、`fan_control.enabled=false` の場合は対象ファンを OFF にします。
 
 API サーバーは `listen_addr` と `listen_port` で待ち受けます。初期ポートは `8080` です。
 
@@ -264,6 +291,17 @@ python -m aquapi.cli read --config configs/aquapi.json --json
       "offset": 0.0,
       "min": 18.0,
       "max": 28.0,
+      "temperature_alert": {
+        "enabled": true,
+        "too_hot_c": 30.0,
+        "too_cold_c": 15.0
+      },
+      "fan_control": {
+        "enabled": true,
+        "fan_id": "fan_1",
+        "start_c": 28.0,
+        "stop_c": 27.5
+      },
       "status": "ok",
       "crc_ok": true
     }
@@ -290,6 +328,21 @@ python -m aquapi.cli read-leak --config configs/aquapi.json --json
 ```text
 leak_main status=dry raw=0
 leak_main status=wet raw=1
+```
+
+ファン設定と最新状態を確認します。状態は SQLite DB と同じディレクトリの `fan-state.json` に保存されます。
+
+```bash
+python -m aquapi.cli fan:list --config configs/aquapi.json
+python -m aquapi.cli fan:list --config configs/aquapi.json --json
+```
+
+Raspberry Pi 上で設定済みファンを順番に ON/OFF して動作確認します。`fan:on` / `fan:off` は個別確認用です。
+
+```bash
+python -m aquapi.cli fan:test --config configs/aquapi.json
+python -m aquapi.cli fan:on fan_1 --config configs/aquapi.json
+python -m aquapi.cli fan:off fan_1 --config configs/aquapi.json
 ```
 
 ## テスト
@@ -349,13 +402,13 @@ curl http://aquapi.local:8080/api/leak/latest
 
 存在しないセンサーIDは JSON エラー付きで 404 を返します。
 
-`/api/readings` の各 sensor item には `short_name`、`short_name_ascii`、`display_code`、`role`、`enabled`、`visible`、`sort_order` が含まれます。`/api/sensors` は設定ファイル上のセンサーマスタを返し、Viewer が表示順や分類を判断するために使えます。
+`/api/readings` の各 sensor item には `short_name`、`short_name_ascii`、`display_code`、`temperature_alert`、`fan_control`、`role`、`enabled`、`visible`、`sort_order` が含まれます。`/api/sensors` は設定ファイル上のセンサーマスタを返し、Viewer が表示順や分類を判断するために使えます。
 
-`/api/tanks/latest` は水槽だけの現在状態を返します。対象は `role: "aquarium"`、`enabled: true`、`visible: true` の温度センサーです。非表示も含める場合は `include_hidden=true` を指定します。各 `tanks[]` には `display_code` が含まれます。`status` は compact API と同じ `safety` / `warning` / `danger` / `unknown` です。
+`/api/tanks/latest` は水槽だけの現在状態を返します。対象は `role: "aquarium"`、`enabled: true`、`visible: true` の温度センサーです。非表示も含める場合は `include_hidden=true` を指定します。各 `tanks[]` には `display_code`、`temperature_alert_state`、`fan_id`、`fan_state` が含まれます。`status` は compact API と同じ `safety` / `warning` / `danger` / `unknown` です。
 
 `/api/leak/latest` は漏水センサーの現在状態を返します。`status` は `dry` / `wet` / `unknown` です。`wet` の場合だけ `alert: true` になります。GPIO 初期化失敗や読み取り失敗時も API は 500 にせず、対象センサーを `unknown` として返します。
 
-`/api/monitoring/compact` は M5Stack / Widget / 小型表示端末向けの軽量 API です。複数 API を組み合わせず、この API だけで水槽の最低限の状態を表示できます。対象は `role: "aquarium"`、`enabled: true`、`visible: true` のセンサーだけです。`tanks[]` には `short_name`、`short_name_ascii`、`display_code` が含まれます。漏水センサーが `wet` の場合は、水温状態より優先して全体 `level` が `critical` になります。
+`/api/monitoring/compact` は M5Stack / Widget / 小型表示端末向けの軽量 API です。複数 API を組み合わせず、この API だけで水槽の最低限の状態を表示できます。対象は `role: "aquarium"`、`enabled: true`、`visible: true` のセンサーだけです。`tanks[]` には `short_name`、`short_name_ascii`、`display_code`、`temperature_alert_state`、`fan_id`、`fan_state` が含まれます。トップレベル `fans[]` には `id`、`state`、`enabled` が含まれます。漏水センサーが `wet` の場合は、水温状態より優先して全体 `level` が `critical` になります。
 
 compact API の全体 `level` / `label`:
 
@@ -568,6 +621,8 @@ sudo -u aquapi /opt/aquapi/.venv/bin/python -m aquapi.cli read-environment --con
 sudo -u aquapi /opt/aquapi/.venv/bin/python -m aquapi.cli read-leak --config /etc/aquapi/aquapi.json
 sudo -u aquapi /opt/aquapi/.venv/bin/python -m aquapi.cli db-init --config /etc/aquapi/aquapi.json
 sudo -u aquapi /opt/aquapi/.venv/bin/python -m aquapi.cli log-once --config /etc/aquapi/aquapi.json
+sudo -u aquapi /opt/aquapi/.venv/bin/python -m aquapi.cli fan:list --config /etc/aquapi/aquapi.json
+sudo -u aquapi sh -c 'cd /var/lib/aquapi && /opt/aquapi/.venv/bin/python -m aquapi.cli fan:test --config /etc/aquapi/aquapi.json'
 sudo -u aquapi /opt/aquapi/.venv/bin/python -m aquapi.cli fetch-weather-once --config /etc/aquapi/aquapi.json
 sudo -u aquapi /opt/aquapi/.venv/bin/python -m aquapi.cli db-stats --config /etc/aquapi/aquapi.json
 ```
@@ -592,6 +647,7 @@ journalctl -u aquapi-weather.service -n 100 --no-pager
 curl http://localhost:8080/api/health
 curl http://localhost:8080/api/weather/latest
 curl http://localhost:8080/api/tanks/latest
+curl http://localhost:8080/api/monitoring/compact
 curl http://localhost:8080/api/environment/latest
 curl http://localhost:8080/api/leak/latest
 ```

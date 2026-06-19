@@ -18,6 +18,36 @@
     "forecast_days": 2,
     "retention_days": 365
   },
+  "fans": [
+    {
+      "id": "fan_1",
+      "name": "Fan 1",
+      "gpio": 22,
+      "active_high": true,
+      "enabled": true
+    },
+    {
+      "id": "fan_2",
+      "name": "Fan 2",
+      "gpio": 23,
+      "active_high": true,
+      "enabled": true
+    },
+    {
+      "id": "fan_3",
+      "name": "Fan 3",
+      "gpio": 24,
+      "active_high": true,
+      "enabled": true
+    },
+    {
+      "id": "fan_4",
+      "name": "Fan 4",
+      "gpio": 25,
+      "active_high": true,
+      "enabled": true
+    }
+  ],
   "environment_sensors": {
     "sht31_room": {
       "name": "室内",
@@ -64,7 +94,18 @@
       "sort_order": 10,
       "offset": 0.0,
       "min": 18.0,
-      "max": 28.0
+      "max": 28.0,
+      "temperature_alert": {
+        "enabled": true,
+        "too_hot_c": 30.0,
+        "too_cold_c": 15.0
+      },
+      "fan_control": {
+        "enabled": true,
+        "fan_id": "fan_1",
+        "start_c": 28.0,
+        "stop_c": 27.5
+      }
     },
     "28-000000224fb6": {
       "name": "めだか水槽",
@@ -78,7 +119,18 @@
       "sort_order": 20,
       "offset": 0.0,
       "min": 18.0,
-      "max": 28.0
+      "max": 28.0,
+      "temperature_alert": {
+        "enabled": true,
+        "too_hot_c": 30.0,
+        "too_cold_c": 15.0
+      },
+      "fan_control": {
+        "enabled": true,
+        "fan_id": "fan_2",
+        "start_c": 28.0,
+        "stop_c": 27.5
+      }
     },
     "28-000000230ee6": {
       "name": "ミニ水槽",
@@ -92,7 +144,18 @@
       "sort_order": 30,
       "offset": 0.0,
       "min": 18.0,
-      "max": 28.0
+      "max": 28.0,
+      "temperature_alert": {
+        "enabled": true,
+        "too_hot_c": 30.0,
+        "too_cold_c": 15.0
+      },
+      "fan_control": {
+        "enabled": true,
+        "fan_id": "fan_3",
+        "start_c": 28.0,
+        "stop_c": 27.5
+      }
     },
     "28-000000235d5e": {
       "name": "金魚水槽",
@@ -106,7 +169,18 @@
       "sort_order": 40,
       "offset": 0.0,
       "min": 15.0,
-      "max": 30.0
+      "max": 30.0,
+      "temperature_alert": {
+        "enabled": true,
+        "too_hot_c": 30.0,
+        "too_cold_c": 12.0
+      },
+      "fan_control": {
+        "enabled": true,
+        "fan_id": "fan_4",
+        "start_c": 28.0,
+        "stop_c": 27.5
+      }
     },
     "28-00000023733a": {
       "name": "外気",

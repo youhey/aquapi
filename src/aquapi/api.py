@@ -10,6 +10,18 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import parse_qs, unquote, urlparse
 
 from aquapi.config import AppConfig, SensorConfig
+from aquapi.fans import (
+    FanState,
+    FanStateStore,
+    build_fan_states,
+    compact_fan_payload,
+    default_fan_state_path,
+    fan_control_payload,
+    fan_state_to_dict,
+    fan_states_by_id,
+    temperature_alert_payload,
+    temperature_alert_state,
+)
 from aquapi.leak import LeakReading, leak_reading_to_dict, read_all_leak_sensors, unknown_leak_readings
 from aquapi.logs import RANGE_DELTAS, build_history_summary_payload, build_series_payload
 from aquapi.sensors import (
@@ -22,6 +34,7 @@ from aquapi.sqlite_storage import SQLiteStorage
 
 ReadingsProvider = Callable[[], list[ConfiguredSensorReading]]
 LeakProvider = Callable[[bool], list[LeakReading]]
+FanStateProvider = Callable[[], list[FanState]]
 STATUS_KEYS = ("ok", "low", "high", "unknown", "error")
 COMPACT_STATUS_PRIORITY = {
     "danger": 3,
@@ -37,6 +50,7 @@ class ApiState:
     readings_provider: ReadingsProvider
     version: str = "dev"
     leak_provider: LeakProvider | None = None
+    fan_state_provider: FanStateProvider | None = None
 
 
 @dataclass(frozen=True)
@@ -47,6 +61,11 @@ class ApiResponse:
 
 def create_readings_provider(config: AppConfig) -> ReadingsProvider:
     return lambda: read_all_configured_sensors(config=config)
+
+
+def create_fan_state_provider(config: AppConfig) -> FanStateProvider:
+    store = FanStateStore(default_fan_state_path(config))
+    return lambda: list(store.load(config).values())
 
 
 def create_handler(state: ApiState) -> type[BaseHTTPRequestHandler]:
@@ -212,7 +231,9 @@ def _handle_history_summary(state: ApiState, params: dict[str, str]) -> ApiRespo
 
 
 def _handle_current_summary(state: ApiState) -> ApiResponse:
-    payload = build_summary_payload(state.readings_provider())
+    readings = state.readings_provider()
+    fan_states = _fan_states_for_api(state, readings)
+    payload = build_summary_payload(readings, config=state.config, fan_states=fan_states)
     if state.config.logging.storage == "sqlite" and state.config.configured_environment_sensors():
         try:
             latest = SQLiteStorage(state.config.logging.database_path).get_environment_latest(state.config)
@@ -249,7 +270,12 @@ def _range_error(exc: ValueError) -> ApiResponse:
 def _handle_monitoring_compact(state: ApiState) -> ApiResponse:
     try:
         readings = state.readings_provider()
-        payload = build_monitoring_compact_payload(readings, leak_readings=_leak_readings(state))
+        payload = build_monitoring_compact_payload(
+            readings,
+            leak_readings=_leak_readings(state),
+            config=state.config,
+            fan_states=_fan_states_for_api(state, readings),
+        )
     except Exception as exc:
         return ApiResponse(
             HTTPStatus.INTERNAL_SERVER_ERROR,
@@ -324,9 +350,11 @@ def _handle_leak_latest(state: ApiState, params: dict[str, str]) -> ApiResponse:
 
 def _handle_tanks_latest(state: ApiState, params: dict[str, str]) -> ApiResponse:
     include_hidden = params.get("include_hidden") == "true"
+    readings = state.readings_provider()
+    fan_states = _fan_states_for_api(state, readings)
     tanks = [
-        _compact_tank(reading)
-        for reading in _sort_readings(_tank_readings(state.readings_provider(), include_hidden))
+        _compact_tank(reading, fan_states=fan_states_by_id(fan_states))
+        for reading in _sort_readings(_tank_readings(readings, include_hidden))
     ]
     return ApiResponse(
         HTTPStatus.OK,
@@ -444,7 +472,12 @@ def build_readings_payload(readings: list[ConfiguredSensorReading]) -> dict[str,
     }
 
 
-def build_summary_payload(readings: list[ConfiguredSensorReading]) -> dict[str, object]:
+def build_summary_payload(
+    readings: list[ConfiguredSensorReading],
+    *,
+    config: AppConfig | None = None,
+    fan_states: list[FanState] | None = None,
+) -> dict[str, object]:
     counts = {status: 0 for status in STATUS_KEYS}
     for reading in _visible_readings(readings):
         if reading.status in counts:
@@ -455,13 +488,21 @@ def build_summary_payload(readings: list[ConfiguredSensorReading]) -> dict[str, 
     status = _overall_status(counts)
     alert = status in {"low", "high", "error"}
 
-    return {
+    payload: dict[str, object] = {
         "generated_at": _now_iso(),
         "status": status,
         "counts": counts,
         "alert": alert,
         "message": "all sensors ok" if status == "ok" else f"{status} sensors found",
     }
+    if config is not None:
+        fan_state_map = fan_states_by_id(fan_states or [])
+        payload["tanks"] = [
+            _summary_tank(reading, fan_state_map)
+            for reading in _sort_readings(_tank_readings(readings, include_hidden=False))
+        ]
+        payload["fans"] = [fan_state_to_dict(state) for state in fan_states or []]
+    return payload
 
 
 def build_sensor_detail_payload(reading: ConfiguredSensorReading) -> dict[str, object]:
@@ -476,6 +517,8 @@ def build_sensor_detail_payload(reading: ConfiguredSensorReading) -> dict[str, o
         "short_name": reading.short_name,
         "short_name_ascii": reading.short_name_ascii,
         "display_code": reading.display_code,
+        "temperature_alert": temperature_alert_payload(reading),
+        "fan_control": fan_control_payload(reading, {}),
         "temperature_c": reading.temperature_c,
         "status": reading.status,
     }
@@ -491,8 +534,14 @@ def build_monitoring_compact_payload(
     readings: list[ConfiguredSensorReading],
     *,
     leak_readings: list[LeakReading] | None = None,
+    config: AppConfig | None = None,
+    fan_states: list[FanState] | None = None,
 ) -> dict[str, object]:
-    tanks = [_compact_tank(reading) for reading in _sort_readings(_compact_aquarium_readings(readings))]
+    fan_state_map = fan_states_by_id(fan_states or [])
+    tanks = [
+        _compact_tank(reading, fan_states=fan_state_map)
+        for reading in _sort_readings(_compact_aquarium_readings(readings))
+    ]
     leak = _compact_leak_payload(leak_readings or [])
     leak_alert_count = sum(1 for reading in leak_readings or [] if reading.status == "wet")
     leak_unknown_count = sum(1 for reading in leak_readings or [] if reading.status == "unknown")
@@ -507,6 +556,7 @@ def build_monitoring_compact_payload(
             "message": "Leak sensor detected water.",
             "issue_count": leak_alert_count,
             "tanks": tanks,
+            "fans": [compact_fan_payload(state) for state in fan_states or []],
             "leak": leak,
         }
 
@@ -528,6 +578,7 @@ def build_monitoring_compact_payload(
                 "message": message,
                 "issue_count": leak_unknown_count,
                 "tanks": [],
+                "fans": [compact_fan_payload(state) for state in fan_states or []],
                 "leak": leak,
             }
         return {
@@ -540,6 +591,7 @@ def build_monitoring_compact_payload(
             "message": "No visible aquarium sensors are configured.",
             "issue_count": 0,
             "tanks": [],
+            "fans": [compact_fan_payload(state) for state in fan_states or []],
             "leak": leak,
         }
 
@@ -560,6 +612,7 @@ def build_monitoring_compact_payload(
         "message": message,
         "issue_count": issue_count,
         "tanks": tanks,
+        "fans": [compact_fan_payload(state) for state in fan_states or []],
         "leak": leak,
     }
 
@@ -589,8 +642,28 @@ def _tank_readings(
     ]
 
 
-def _compact_tank(reading: ConfiguredSensorReading) -> dict[str, object]:
+def _summary_tank(reading: ConfiguredSensorReading, fan_states: dict[str, FanState]) -> dict[str, object]:
+    return {
+        "sensor_id": reading.sensor_id,
+        "name": reading.name,
+        "short_name": reading.short_name,
+        "short_name_ascii": reading.short_name_ascii,
+        "display_code": reading.display_code,
+        "temperature_c": reading.temperature_c,
+        "status": reading.status,
+        "temperature_alert": temperature_alert_payload(reading),
+        "fan_control": fan_control_payload(reading, fan_states),
+    }
+
+
+def _compact_tank(
+    reading: ConfiguredSensorReading,
+    *,
+    fan_states: dict[str, FanState] | None = None,
+) -> dict[str, object]:
     status = _compact_status(reading)
+    fan_state_map = fan_states or {}
+    fan_state = fan_state_map.get(reading.fan_control.fan_id)
     return {
         "sensor_id": reading.sensor_id,
         "name": reading.name,
@@ -599,6 +672,9 @@ def _compact_tank(reading: ConfiguredSensorReading) -> dict[str, object]:
         "display_code": reading.display_code,
         "temperature_c": reading.temperature_c,
         "status": status,
+        "temperature_alert_state": temperature_alert_state(reading),
+        "fan_id": reading.fan_control.fan_id,
+        "fan_state": fan_state.state if fan_state is not None else ("disabled" if not reading.fan_control.enabled else "unknown"),
         "alert": status in {"warning", "danger", "unknown"},
     }
 
@@ -774,6 +850,17 @@ def _sensor_config_to_dict(sensor_config: SensorConfig) -> dict[str, object]:
         "short_name": sensor_config.short_name,
         "short_name_ascii": sensor_config.short_name_ascii,
         "display_code": sensor_config.display_code,
+        "temperature_alert": {
+            "enabled": sensor_config.temperature_alert.enabled,
+            "too_hot_c": sensor_config.temperature_alert.too_hot_c,
+            "too_cold_c": sensor_config.temperature_alert.too_cold_c,
+        },
+        "fan_control": {
+            "enabled": sensor_config.fan_control.enabled,
+            "fan_id": sensor_config.fan_control.fan_id,
+            "start_c": sensor_config.fan_control.start_c,
+            "stop_c": sensor_config.fan_control.stop_c,
+        },
         "min": sensor_config.min,
         "max": sensor_config.max,
         "offset": sensor_config.offset,
@@ -792,6 +879,7 @@ def serve_api(
     state = ApiState(
         config=config,
         readings_provider=readings_provider or create_readings_provider(config),
+        fan_state_provider=create_fan_state_provider(config),
     )
     server = ThreadingHTTPServer((listen_host, listen_port), create_handler(state))
     try:
@@ -814,3 +902,12 @@ def _overall_status(counts: dict[str, int]) -> str:
 
 def _now_iso() -> str:
     return datetime.now().astimezone().isoformat(timespec="seconds")
+
+
+def _fan_states_for_api(state: ApiState, readings: list[ConfiguredSensorReading]) -> list[FanState]:
+    if not state.config.configured_fans():
+        return []
+    previous_states: dict[str, FanState] = {}
+    if state.fan_state_provider is not None:
+        previous_states = fan_states_by_id(state.fan_state_provider())
+    return build_fan_states(state.config, readings, previous_states=previous_states)

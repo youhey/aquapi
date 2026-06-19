@@ -12,6 +12,7 @@ from typing import Iterator
 
 from aquapi.config import AppConfig, LoggingConfig
 from aquapi.environment import collect_environment_if_due
+from aquapi.fans import FanController
 from aquapi.sensors import ConfiguredSensorReading, read_all_configured_sensors
 from aquapi.sqlite_storage import SQLiteStorage
 
@@ -46,18 +47,30 @@ def log_once(
 
 def collect_forever(config: AppConfig) -> None:
     last_environment_read_at: datetime | None = None
-    while True:
-        current = _now()
-        try:
-            log_once(config, now=current)
-        except (OSError, sqlite3.Error) as exc:
-            print(f"error: {exc}", file=sys.stderr)
-        last_environment_read_at = collect_environment_if_due(
-            config,
-            now=current,
-            last_read_at=last_environment_read_at,
-        )
-        time.sleep(config.logging.interval_seconds)
+    fan_controller = FanController(config) if config.configured_fans() else None
+    try:
+        while True:
+            current = _now()
+            readings: list[ConfiguredSensorReading] = []
+            try:
+                readings = read_all_configured_sensors(config=config)
+                write_readings(config, readings, now=current)
+            except (OSError, sqlite3.Error) as exc:
+                print(f"error: {exc}", file=sys.stderr)
+            if fan_controller is not None:
+                try:
+                    fan_controller.apply(readings, now=current)
+                except OSError as exc:
+                    print(f"error: fan control failed: {exc}", file=sys.stderr)
+            last_environment_read_at = collect_environment_if_due(
+                config,
+                now=current,
+                last_read_at=last_environment_read_at,
+            )
+            time.sleep(config.logging.interval_seconds)
+    finally:
+        if fan_controller is not None:
+            fan_controller.close()
 
 
 def write_readings(

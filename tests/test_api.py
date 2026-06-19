@@ -6,8 +6,17 @@ from http import HTTPStatus
 import unittest
 
 from aquapi.api import ApiState, build_summary_payload, handle_api_request
-from aquapi.config import AppConfig, EnvironmentSensorConfig, LoggingConfig, SensorConfig
+from aquapi.config import (
+    AppConfig,
+    EnvironmentSensorConfig,
+    FanConfig,
+    FanControlConfig,
+    LoggingConfig,
+    SensorConfig,
+    TemperatureAlertConfig,
+)
 from aquapi.environment import EnvironmentReading
+from aquapi.fans import FanState
 from aquapi.leak import LeakReading
 from aquapi.logs import write_readings
 from aquapi.sqlite_storage import SQLiteStorage
@@ -27,6 +36,8 @@ def make_reading(
     short_name: str = "増田川",
     short_name_ascii: str = "MASUDA",
     display_code: str = "MDS",
+    temperature_alert: TemperatureAlertConfig | None = None,
+    fan_control: FanControlConfig | None = None,
     sensor_type: str = "water",
     temperature_c: float | None = 23.187,
     min_temperature: float | None = 18.0,
@@ -54,6 +65,8 @@ def make_reading(
         short_name=short_name,
         short_name_ascii=short_name_ascii,
         display_code=display_code,
+        temperature_alert=temperature_alert or TemperatureAlertConfig(),
+        fan_control=fan_control or FanControlConfig(),
     )
 
 
@@ -106,6 +119,39 @@ class ApiTests(unittest.TestCase):
         self.assertEqual(payload["counts"]["error"], 1)
         self.assertEqual(payload["status"], "error")
         self.assertTrue(payload["alert"])
+
+    def test_summary_includes_temperature_alert_and_fan_state(self) -> None:
+        response = handle_api_request(
+            "/api/summary",
+            make_state(
+                [
+                    make_reading(
+                        temperature_c=28.1,
+                        temperature_alert=TemperatureAlertConfig(
+                            enabled=True,
+                            too_hot_c=30.0,
+                            too_cold_c=15.0,
+                        ),
+                        fan_control=FanControlConfig(
+                            enabled=True,
+                            fan_id="fan_1",
+                            start_c=28.0,
+                            stop_c=27.5,
+                        ),
+                    )
+                ],
+                fans=make_fans(),
+                fan_states=[make_fan_state(state="on", reason="temperature_above_start")],
+            ),
+        )
+
+        self.assertEqual(response.status, HTTPStatus.OK)
+        tank = response.payload["tanks"][0]
+        self.assertEqual(tank["temperature_alert"]["state"], "ok")
+        self.assertEqual(tank["temperature_alert"]["too_hot_c"], 30.0)
+        self.assertEqual(tank["fan_control"]["fan_id"], "fan_1")
+        self.assertEqual(tank["fan_control"]["state"], "on")
+        self.assertEqual(response.payload["fans"][0]["state"], "on")
 
     def test_sensors_returns_configured_sensor_master_in_sort_order(self) -> None:
         response = handle_api_request(
@@ -193,6 +239,38 @@ class ApiTests(unittest.TestCase):
         self.assertEqual(tanks[0]["temperature_c"], 21.4)
         self.assertEqual(tanks[0]["status"], "safety")
         self.assertFalse(tanks[0]["alert"])
+
+    def test_monitoring_compact_includes_temperature_alert_and_fan_state(self) -> None:
+        response = handle_api_request(
+            "/api/monitoring/compact",
+            make_state(
+                [
+                    make_reading(
+                        temperature_c=28.1,
+                        temperature_alert=TemperatureAlertConfig(
+                            enabled=True,
+                            too_hot_c=30.0,
+                            too_cold_c=15.0,
+                        ),
+                        fan_control=FanControlConfig(
+                            enabled=True,
+                            fan_id="fan_1",
+                            start_c=28.0,
+                            stop_c=27.5,
+                        ),
+                    )
+                ],
+                fans=make_fans(),
+                fan_states=[make_fan_state(state="on", reason="temperature_above_start")],
+            ),
+        )
+
+        self.assertEqual(response.status, HTTPStatus.OK)
+        tank = response.payload["tanks"][0]
+        self.assertEqual(tank["temperature_alert_state"], "ok")
+        self.assertEqual(tank["fan_id"], "fan_1")
+        self.assertEqual(tank["fan_state"], "on")
+        self.assertEqual(response.payload["fans"], [{"id": "fan_1", "state": "on", "enabled": True}])
 
     def test_tanks_latest_returns_only_visible_aquarium_status(self) -> None:
         response = handle_api_request(
@@ -703,6 +781,8 @@ def make_state(
     logging_config: LoggingConfig | None = None,
     weather_enabled: bool = False,
     sensors: dict[str, SensorConfig] | None = None,
+    fans: dict[str, FanConfig] | None = None,
+    fan_states: list[FanState] | None = None,
     environment_sensors: dict[str, EnvironmentSensorConfig] | None = None,
     leak_sensors: dict[str, "LeakSensorConfig"] | None = None,
     leak_readings: list[LeakReading] | None = None,
@@ -718,6 +798,7 @@ def make_state(
     return ApiState(
         config=AppConfig(
             sensors=sensors or {},
+            fans=fans,
             environment_sensors=environment_sensors,
             leak_sensors=leak_sensors,
             logging=logging_config or LoggingConfig(),
@@ -725,6 +806,7 @@ def make_state(
         ),
         readings_provider=lambda: readings,
         leak_provider=leak_provider if leak_readings is not None or leak_provider_raises else None,
+        fan_state_provider=(lambda: fan_states or []) if fan_states is not None else None,
     )
 
 
@@ -735,6 +817,31 @@ def make_logging_config(data_dir: Path) -> LoggingConfig:
         storage="sqlite",
         database_path=data_dir / "aquapi.sqlite3",
         retention_days=365,
+    )
+
+
+def make_fans() -> dict[str, FanConfig]:
+    return {
+        "fan_1": FanConfig(
+            fan_id="fan_1",
+            name="Fan 1",
+            gpio=22,
+            active_high=True,
+            enabled=True,
+        )
+    }
+
+
+def make_fan_state(*, state: str, reason: str) -> FanState:
+    return FanState(
+        fan_id="fan_1",
+        name="Fan 1",
+        gpio=22,
+        active_high=True,
+        enabled=True,
+        state=state,
+        bound_tank_id="28-00000020f5ed",
+        reason=reason,
     )
 
 

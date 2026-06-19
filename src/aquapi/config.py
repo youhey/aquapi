@@ -1,9 +1,33 @@
 from __future__ import annotations
 
 import json
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
+
+
+@dataclass(frozen=True)
+class TemperatureAlertConfig:
+    enabled: bool = False
+    too_hot_c: float | None = None
+    too_cold_c: float | None = None
+
+
+@dataclass(frozen=True)
+class FanControlConfig:
+    enabled: bool = False
+    fan_id: str = ""
+    start_c: float | None = None
+    stop_c: float | None = None
+
+
+@dataclass(frozen=True)
+class FanConfig:
+    fan_id: str
+    name: str
+    gpio: int
+    active_high: bool = True
+    enabled: bool = True
 
 
 @dataclass(frozen=True)
@@ -21,6 +45,8 @@ class SensorConfig:
     short_name: str = ""
     short_name_ascii: str = ""
     display_code: str = ""
+    temperature_alert: TemperatureAlertConfig = field(default_factory=TemperatureAlertConfig)
+    fan_control: FanControlConfig = field(default_factory=FanControlConfig)
 
     def __post_init__(self) -> None:
         if self.role == "":
@@ -116,6 +142,7 @@ class LeakSensorConfig:
 @dataclass(frozen=True)
 class AppConfig:
     sensors: dict[str, SensorConfig]
+    fans: dict[str, FanConfig] | None = None
     environment_sensors: dict[str, EnvironmentSensorConfig] | None = None
     leak_sensors: dict[str, LeakSensorConfig] | None = None
     listen_addr: str = "0.0.0.0"
@@ -132,6 +159,9 @@ class AppConfig:
     def configured_leak_sensors(self) -> dict[str, LeakSensorConfig]:
         return self.leak_sensors or {}
 
+    def configured_fans(self) -> dict[str, FanConfig]:
+        return self.fans or {}
+
 
 def load_config(path: Path) -> AppConfig:
     data = json.loads(path.read_text(encoding="utf-8"))
@@ -142,6 +172,7 @@ def load_config(path: Path) -> AppConfig:
     if not isinstance(sensors_data, dict):
         raise ValueError("設定ファイルに sensors object が必要です")
 
+    fans = _load_fan_configs(data.get("fans"))
     sensors: dict[str, SensorConfig] = {}
     for sensor_id, raw_config in sensors_data.items():
         if not isinstance(sensor_id, str):
@@ -163,10 +194,24 @@ def load_config(path: Path) -> AppConfig:
             short_name=_optional_short_name(raw_config, "short_name"),
             short_name_ascii=_optional_short_name_ascii(raw_config, "short_name_ascii"),
             display_code=_optional_display_code(raw_config, "display_code"),
+            temperature_alert=_load_temperature_alert_config(
+                raw_config.get("temperature_alert"),
+                sensor_id=sensor_id,
+                sensor_type=raw_config.get("type"),
+            ),
+            fan_control=_load_fan_control_config(
+                raw_config.get("fan_control"),
+                sensor_id=sensor_id,
+                sensor_type=raw_config.get("type"),
+                fans=fans,
+            ),
         )
+
+    _validate_unique_enabled_fan_bindings(sensors)
 
     return AppConfig(
         sensors=sensors,
+        fans=fans,
         environment_sensors=_load_environment_sensor_configs(data.get("environment_sensors")),
         leak_sensors=_load_leak_sensor_configs(data.get("leak_sensors")),
         listen_addr=_optional_str(data, "listen_addr", default="0.0.0.0"),
@@ -174,6 +219,99 @@ def load_config(path: Path) -> AppConfig:
         logging=_load_logging_config(data.get("logging")),
         weather=_load_weather_config(data.get("weather")),
     )
+
+
+def _load_fan_configs(data: Any) -> dict[str, FanConfig]:
+    if data is None:
+        return {}
+    if not isinstance(data, list):
+        raise ValueError("fans は array である必要があります")
+
+    fans: dict[str, FanConfig] = {}
+    for index, raw_config in enumerate(data):
+        context = f"fans[{index}]"
+        if not isinstance(raw_config, dict):
+            raise ValueError(f"{context}: fan 設定は object である必要があります")
+        fan_id = _required_str(raw_config, "id", context)
+        if fan_id in fans:
+            raise ValueError(f"{context}: fan.id が重複しています: {fan_id}")
+        fans[fan_id] = FanConfig(
+            fan_id=fan_id,
+            name=_optional_str(raw_config, "name", default=fan_id),
+            gpio=_optional_int(raw_config, "gpio", default=22),
+            active_high=_optional_bool(raw_config, "active_high", default=True),
+            enabled=_optional_bool(raw_config, "enabled", default=True),
+        )
+    return fans
+
+
+def _load_temperature_alert_config(
+    data: Any,
+    *,
+    sensor_id: str,
+    sensor_type: object,
+) -> TemperatureAlertConfig:
+    if data is None:
+        return TemperatureAlertConfig()
+    if not isinstance(data, dict):
+        raise ValueError(f"{sensor_id}: temperature_alert は object である必要があります")
+
+    enabled = _optional_bool(data, "enabled", default=False)
+    if enabled and sensor_type != "water":
+        raise ValueError(f"{sensor_id}: water 以外のセンサーでは temperature_alert.enabled=true にできません")
+    too_hot_c = _required_float(data, "too_hot_c", sensor_id) if enabled else _optional_float(data, "too_hot_c", sensor_id)
+    too_cold_c = (
+        _required_float(data, "too_cold_c", sensor_id) if enabled else _optional_float(data, "too_cold_c", sensor_id)
+    )
+    if too_hot_c is not None and too_cold_c is not None and too_hot_c <= too_cold_c:
+        raise ValueError(f"{sensor_id}: temperature_alert.too_hot_c は too_cold_c より大きい必要があります")
+    return TemperatureAlertConfig(enabled=enabled, too_hot_c=too_hot_c, too_cold_c=too_cold_c)
+
+
+def _load_fan_control_config(
+    data: Any,
+    *,
+    sensor_id: str,
+    sensor_type: object,
+    fans: dict[str, FanConfig],
+) -> FanControlConfig:
+    if data is None:
+        return FanControlConfig()
+    if not isinstance(data, dict):
+        raise ValueError(f"{sensor_id}: fan_control は object である必要があります")
+
+    enabled = _optional_bool(data, "enabled", default=False)
+    if enabled and sensor_type != "water":
+        raise ValueError(f"{sensor_id}: water 以外のセンサーでは fan_control.enabled=true にできません")
+    if not enabled:
+        return FanControlConfig(
+            enabled=False,
+            fan_id=_optional_str_or_empty(data, "fan_id"),
+            start_c=_optional_float(data, "start_c", sensor_id),
+            stop_c=_optional_float(data, "stop_c", sensor_id),
+        )
+
+    fan_id = _required_str(data, "fan_id", sensor_id)
+    if fan_id not in fans:
+        raise ValueError(f"{sensor_id}: fan_control.fan_id が fans に存在しません: {fan_id}")
+    start_c = _required_float(data, "start_c", sensor_id)
+    stop_c = _required_float(data, "stop_c", sensor_id)
+    if start_c <= stop_c:
+        raise ValueError(f"{sensor_id}: fan_control.start_c は stop_c より大きい必要があります")
+    return FanControlConfig(enabled=True, fan_id=fan_id, start_c=start_c, stop_c=stop_c)
+
+
+def _validate_unique_enabled_fan_bindings(sensors: dict[str, SensorConfig]) -> None:
+    bound: dict[str, str] = {}
+    for sensor_id, sensor_config in sensors.items():
+        fan_control = sensor_config.fan_control
+        if not fan_control.enabled:
+            continue
+        if fan_control.fan_id in bound:
+            raise ValueError(
+                f"{sensor_id}: fan_control.fan_id が複数センサーに紐づいています: {fan_control.fan_id}"
+            )
+        bound[fan_control.fan_id] = sensor_id
 
 
 def _load_logging_config(data: Any) -> LoggingConfig:
@@ -288,6 +426,15 @@ def _optional_str(data: dict[str, Any], key: str, *, default: str) -> str:
     value = data.get(key, default)
     if not isinstance(value, str) or value == "":
         raise ValueError(f"{key} は空でない文字列である必要があります")
+    return value
+
+
+def _optional_str_or_empty(data: dict[str, Any], key: str) -> str:
+    value = data.get(key, "")
+    if value == "":
+        return ""
+    if not isinstance(value, str):
+        raise ValueError(f"{key} は文字列である必要があります")
     return value
 
 
@@ -423,6 +570,13 @@ def _optional_number(data: dict[str, Any], key: str, *, default: float) -> float
     value = data.get(key, default)
     if isinstance(value, bool) or not isinstance(value, (int, float)):
         raise ValueError(f"{key} は数値である必要があります")
+    return float(value)
+
+
+def _required_float(data: dict[str, Any], key: str, context: str) -> float:
+    value = data.get(key)
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        raise ValueError(f"{context}: {key} は数値である必要があります")
     return float(value)
 
 

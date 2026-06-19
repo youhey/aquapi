@@ -235,6 +235,41 @@ class CliTests(unittest.TestCase):
         self.assertEqual(exit_code, 0)
         collect_forever.assert_called_once()
 
+    def test_fan_list_outputs_configured_fans(self) -> None:
+        with TemporaryDirectory() as tmp_dir:
+            tmp_path = Path(tmp_dir)
+            config_path = tmp_path / "aquapi.json"
+            config_path.write_text(
+                json.dumps(
+                    {
+                        "logging": {
+                            "storage": "sqlite",
+                            "database_path": str(tmp_path / "data/aquapi.sqlite3"),
+                        },
+                        "fans": [
+                            {
+                                "id": "fan_1",
+                                "name": "Fan 1",
+                                "gpio": 22,
+                                "active_high": True,
+                                "enabled": True,
+                            }
+                        ],
+                        "sensors": {},
+                    },
+                    ensure_ascii=False,
+                ),
+                encoding="utf-8",
+            )
+
+            with patch("sys.stdout", new_callable=StringIO) as stdout:
+                exit_code = main(["fan:list", "--config", str(config_path), "--json"])
+
+        self.assertEqual(exit_code, 0)
+        payload = json.loads(stdout.getvalue())
+        self.assertEqual(payload["fans"][0]["id"], "fan_1")
+        self.assertEqual(payload["fans"][0]["gpio"], 22)
+
     def test_db_init_command_initializes_storage(self) -> None:
         with TemporaryDirectory() as tmp_dir:
             config_path = write_sqlite_config(Path(tmp_dir))

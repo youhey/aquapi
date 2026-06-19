@@ -1,10 +1,10 @@
 from __future__ import annotations
 
 import re
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 
-from aquapi.config import AppConfig, SensorConfig
+from aquapi.config import AppConfig, FanControlConfig, SensorConfig, TemperatureAlertConfig
 
 
 DEFAULT_W1_BASE_PATH = Path("/sys/bus/w1/devices")
@@ -44,6 +44,8 @@ class ConfiguredSensorReading:
     short_name: str = ""
     short_name_ascii: str = ""
     display_code: str = ""
+    temperature_alert: TemperatureAlertConfig = field(default_factory=TemperatureAlertConfig)
+    fan_control: FanControlConfig = field(default_factory=FanControlConfig)
 
 
 def configured_sensor_reading_to_dict(
@@ -60,6 +62,17 @@ def configured_sensor_reading_to_dict(
         "short_name": reading.short_name,
         "short_name_ascii": reading.short_name_ascii,
         "display_code": reading.display_code,
+        "temperature_alert": {
+            "enabled": reading.temperature_alert.enabled,
+            "too_hot_c": reading.temperature_alert.too_hot_c,
+            "too_cold_c": reading.temperature_alert.too_cold_c,
+        },
+        "fan_control": {
+            "enabled": reading.fan_control.enabled,
+            "fan_id": reading.fan_control.fan_id,
+            "start_c": reading.fan_control.start_c,
+            "stop_c": reading.fan_control.stop_c,
+        },
         "raw_temperature_c": reading.raw_temperature_c,
         "temperature_c": reading.temperature_c,
         "offset": reading.offset,
@@ -123,6 +136,8 @@ def apply_sensor_config(
             short_name="unknown",
             short_name_ascii="unknown",
             display_code="",
+            temperature_alert=TemperatureAlertConfig(),
+            fan_control=FanControlConfig(),
             raw_temperature_c=reading.temperature_c,
             temperature_c=reading.temperature_c,
             offset=0.0,
@@ -146,6 +161,8 @@ def apply_sensor_config(
         short_name=sensor_config.short_name,
         short_name_ascii=sensor_config.short_name_ascii,
         display_code=sensor_config.display_code,
+        temperature_alert=sensor_config.temperature_alert,
+        fan_control=sensor_config.fan_control,
         raw_temperature_c=reading.temperature_c,
         temperature_c=temperature_c,
         offset=sensor_config.offset,
@@ -201,6 +218,8 @@ def _error_reading(
         short_name = "unknown"
         short_name_ascii = "unknown"
         display_code = ""
+        temperature_alert = TemperatureAlertConfig()
+        fan_control = FanControlConfig()
         offset = 0.0
         min_temperature = None
         max_temperature = None
@@ -214,6 +233,8 @@ def _error_reading(
         short_name = sensor_config.short_name
         short_name_ascii = sensor_config.short_name_ascii
         display_code = sensor_config.display_code
+        temperature_alert = sensor_config.temperature_alert
+        fan_control = sensor_config.fan_control
         offset = sensor_config.offset
         min_temperature = sensor_config.min
         max_temperature = sensor_config.max
@@ -229,6 +250,8 @@ def _error_reading(
         short_name=short_name,
         short_name_ascii=short_name_ascii,
         display_code=display_code,
+        temperature_alert=temperature_alert,
+        fan_control=fan_control,
         raw_temperature_c=None,
         temperature_c=None,
         offset=offset,

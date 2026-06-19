@@ -35,6 +35,15 @@ class ConfigTests(unittest.TestCase):
                             "forecast_days": 2,
                             "retention_days": 365,
                         },
+                        "fans": [
+                            {
+                                "id": "fan_1",
+                                "name": "Fan 1",
+                                "gpio": 22,
+                                "active_high": True,
+                                "enabled": True,
+                            }
+                        ],
                         "environment_sensors": {
                             "sht31_room": {
                                 "name": "室内",
@@ -82,6 +91,17 @@ class ConfigTests(unittest.TestCase):
                                 "offset": -0.2,
                                 "min": 18.0,
                                 "max": 28.0,
+                                "temperature_alert": {
+                                    "enabled": True,
+                                    "too_hot_c": 30.0,
+                                    "too_cold_c": 15.0,
+                                },
+                                "fan_control": {
+                                    "enabled": True,
+                                    "fan_id": "fan_1",
+                                    "start_c": 28.0,
+                                    "stop_c": 27.5,
+                                },
                             }
                         }
                     },
@@ -107,6 +127,18 @@ class ConfigTests(unittest.TestCase):
         self.assertEqual(sensor_config.offset, -0.2)
         self.assertEqual(sensor_config.min, 18.0)
         self.assertEqual(sensor_config.max, 28.0)
+        self.assertTrue(sensor_config.temperature_alert.enabled)
+        self.assertEqual(sensor_config.temperature_alert.too_hot_c, 30.0)
+        self.assertEqual(sensor_config.temperature_alert.too_cold_c, 15.0)
+        self.assertTrue(sensor_config.fan_control.enabled)
+        self.assertEqual(sensor_config.fan_control.fan_id, "fan_1")
+        self.assertEqual(sensor_config.fan_control.start_c, 28.0)
+        self.assertEqual(sensor_config.fan_control.stop_c, 27.5)
+        fan = config.configured_fans()["fan_1"]
+        self.assertEqual(fan.name, "Fan 1")
+        self.assertEqual(fan.gpio, 22)
+        self.assertTrue(fan.active_high)
+        self.assertTrue(fan.enabled)
         self.assertEqual(config.listen_addr, "127.0.0.1")
         self.assertEqual(config.listen_port, 8080)
         self.assertTrue(config.logging.enabled)
@@ -184,6 +216,8 @@ class ConfigTests(unittest.TestCase):
         self.assertEqual(water.short_name, "水槽")
         self.assertEqual(water.short_name_ascii, "")
         self.assertEqual(water.display_code, "")
+        self.assertFalse(water.temperature_alert.enabled)
+        self.assertFalse(water.fan_control.enabled)
         self.assertEqual(air.role, "outdoor")
         self.assertEqual(air.short_name, "外気")
         self.assertEqual(air.short_name_ascii, "")
@@ -235,6 +269,116 @@ class ConfigTests(unittest.TestCase):
         assert ascii_name is not None
         self.assertEqual(ascii_short.short_name_ascii, "SHORT")
         self.assertEqual(ascii_name.short_name_ascii, "OUTDOOR")
+
+    def test_load_config_rejects_duplicate_fan_id(self) -> None:
+        config = {
+            "fans": [
+                {"id": "fan_1", "name": "Fan 1", "gpio": 22},
+                {"id": "fan_1", "name": "Fan 1 duplicate", "gpio": 23},
+            ],
+            "sensors": {},
+        }
+
+        with TemporaryDirectory() as tmp_dir:
+            config_path = Path(tmp_dir) / "aquapi.json"
+            config_path.write_text(json.dumps(config, ensure_ascii=False), encoding="utf-8")
+
+            with self.assertRaisesRegex(ValueError, "fan.id が重複"):
+                load_config(config_path)
+
+    def test_load_config_rejects_unknown_fan_binding(self) -> None:
+        config = {
+            "fans": [{"id": "fan_1", "name": "Fan 1", "gpio": 22}],
+            "sensors": {
+                "28-1": {
+                    "name": "水槽",
+                    "type": "water",
+                    "fan_control": {
+                        "enabled": True,
+                        "fan_id": "fan_missing",
+                        "start_c": 28.0,
+                        "stop_c": 27.5,
+                    },
+                }
+            },
+        }
+
+        with TemporaryDirectory() as tmp_dir:
+            config_path = Path(tmp_dir) / "aquapi.json"
+            config_path.write_text(json.dumps(config, ensure_ascii=False), encoding="utf-8")
+
+            with self.assertRaisesRegex(ValueError, "fan_control.fan_id が fans に存在しません"):
+                load_config(config_path)
+
+    def test_load_config_rejects_invalid_fan_hysteresis(self) -> None:
+        config = {
+            "fans": [{"id": "fan_1", "name": "Fan 1", "gpio": 22}],
+            "sensors": {
+                "28-1": {
+                    "name": "水槽",
+                    "type": "water",
+                    "fan_control": {
+                        "enabled": True,
+                        "fan_id": "fan_1",
+                        "start_c": 27.5,
+                        "stop_c": 28.0,
+                    },
+                }
+            },
+        }
+
+        with TemporaryDirectory() as tmp_dir:
+            config_path = Path(tmp_dir) / "aquapi.json"
+            config_path.write_text(json.dumps(config, ensure_ascii=False), encoding="utf-8")
+
+            with self.assertRaisesRegex(ValueError, "fan_control.start_c は stop_c より大きい"):
+                load_config(config_path)
+
+    def test_load_config_rejects_invalid_temperature_alert_range(self) -> None:
+        config = {
+            "sensors": {
+                "28-1": {
+                    "name": "水槽",
+                    "type": "water",
+                    "temperature_alert": {
+                        "enabled": True,
+                        "too_hot_c": 15.0,
+                        "too_cold_c": 30.0,
+                    },
+                }
+            }
+        }
+
+        with TemporaryDirectory() as tmp_dir:
+            config_path = Path(tmp_dir) / "aquapi.json"
+            config_path.write_text(json.dumps(config, ensure_ascii=False), encoding="utf-8")
+
+            with self.assertRaisesRegex(ValueError, "temperature_alert.too_hot_c は too_cold_c より大きい"):
+                load_config(config_path)
+
+    def test_load_config_rejects_fan_control_on_non_water_sensor(self) -> None:
+        config = {
+            "fans": [{"id": "fan_1", "name": "Fan 1", "gpio": 22}],
+            "sensors": {
+                "28-air": {
+                    "name": "外気",
+                    "type": "air",
+                    "fan_control": {
+                        "enabled": True,
+                        "fan_id": "fan_1",
+                        "start_c": 28.0,
+                        "stop_c": 27.5,
+                    },
+                }
+            },
+        }
+
+        with TemporaryDirectory() as tmp_dir:
+            config_path = Path(tmp_dir) / "aquapi.json"
+            config_path.write_text(json.dumps(config, ensure_ascii=False), encoding="utf-8")
+
+            with self.assertRaisesRegex(ValueError, "water 以外のセンサー"):
+                load_config(config_path)
 
     def test_load_config_rejects_invalid_display_code(self) -> None:
         with TemporaryDirectory() as tmp_dir:
@@ -371,6 +515,9 @@ class ConfigTests(unittest.TestCase):
         self.assertEqual(mini.display_code, "MIN")
         self.assertEqual(kingyo.display_code, "KNG")
         self.assertEqual(outdoor.display_code, "OUT")
+        self.assertEqual(sorted(config.configured_fans()), ["fan_1", "fan_2", "fan_3", "fan_4"])
+        self.assertEqual(sensor_config.fan_control.fan_id, "fan_1")
+        self.assertTrue(sensor_config.temperature_alert.enabled)
         environment_sensor = config.configured_environment_sensors()["sht31_room"]
         self.assertEqual(environment_sensor.short_name_ascii, "ROOM")
         self.assertEqual(environment_sensor.i2c_address, 0x44)

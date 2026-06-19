@@ -9,6 +9,15 @@ from pathlib import Path
 from aquapi.api import serve_api
 from aquapi.config import AppConfig, load_config
 from aquapi.environment import EnvironmentReading, read_all_environment_sensors
+from aquapi.fans import (
+    FAN_OFF,
+    FAN_ON,
+    FanStateStore,
+    default_fan_state_path,
+    fan_state_to_dict,
+    run_fan_test,
+    set_manual_fan_state,
+)
 from aquapi.leak import leak_reading_to_dict, read_all_leak_sensors
 from aquapi.logs import collect_forever, initialize_storage, log_once
 from aquapi.sqlite_storage import SQLiteStorage
@@ -63,6 +72,22 @@ def build_parser() -> argparse.ArgumentParser:
         help="指定間隔で Open-Meteo の外部気象を取得して保存し続けます",
     )
     weather_collect_parser.add_argument("--config", type=Path, required=True, help="センサー設定 JSON のパス")
+
+    fan_list_parser = subparsers.add_parser("fan:list", help="ファン設定と最新状態を表示します")
+    fan_list_parser.add_argument("--json", action="store_true", help="JSON 形式で出力します")
+    fan_list_parser.add_argument("--config", type=Path, required=True, help="センサー設定 JSON のパス")
+
+    fan_on_parser = subparsers.add_parser("fan:on", help="指定ファンを手動でONにします")
+    fan_on_parser.add_argument("fan_id", help="fan id")
+    fan_on_parser.add_argument("--config", type=Path, required=True, help="センサー設定 JSON のパス")
+
+    fan_off_parser = subparsers.add_parser("fan:off", help="指定ファンを手動でOFFにします")
+    fan_off_parser.add_argument("fan_id", help="fan id")
+    fan_off_parser.add_argument("--config", type=Path, required=True, help="センサー設定 JSON のパス")
+
+    fan_test_parser = subparsers.add_parser("fan:test", help="設定済みファンを順番にON/OFFします")
+    fan_test_parser.add_argument("--config", type=Path, required=True, help="センサー設定 JSON のパス")
+    fan_test_parser.add_argument("--sleep-seconds", type=float, default=3.0, help="各ファンをONにする秒数")
 
     return parser
 
@@ -162,6 +187,14 @@ def main(argv: list[str] | None = None) -> int:
         return run_fetch_weather_once(config_path=args.config)
     if args.command == "weather-collect":
         return run_weather_collect(config_path=args.config)
+    if args.command == "fan:list":
+        return run_fan_list(config_path=args.config, as_json=args.json)
+    if args.command == "fan:on":
+        return run_fan_on(config_path=args.config, fan_id=args.fan_id)
+    if args.command == "fan:off":
+        return run_fan_off(config_path=args.config, fan_id=args.fan_id)
+    if args.command == "fan:test":
+        return run_fan_test_command(config_path=args.config, sleep_seconds=args.sleep_seconds)
 
     raise AssertionError(f"unsupported command: {args.command}")
 
@@ -217,6 +250,62 @@ def run_collect(*, config_path: Path) -> int:
         return 1
 
     return 0
+
+
+def run_fan_list(*, config_path: Path, as_json: bool) -> int:
+    config = _load_config(config_path)
+    if config is None:
+        return 1
+
+    states = FanStateStore(default_fan_state_path(config)).load(config)
+    payload = {
+        "fans": [
+            {
+                "id": fan.fan_id,
+                "name": fan.name,
+                "gpio": fan.gpio,
+                "active_high": fan.active_high,
+                "enabled": fan.enabled,
+                "state": fan_state_to_dict(states[fan.fan_id]) if fan.fan_id in states else None,
+            }
+            for fan in sorted(config.configured_fans().values(), key=lambda item: item.fan_id)
+        ]
+    }
+    if as_json:
+        print(json.dumps(payload, ensure_ascii=False, indent=2))
+        return 0
+
+    for fan in payload["fans"]:
+        assert isinstance(fan, dict)
+        state = fan.get("state")
+        state_text = "-"
+        reason_text = "-"
+        if isinstance(state, dict):
+            state_text = str(state.get("state", "-"))
+            reason_text = str(state.get("reason", "-"))
+        print(f"{fan['id']} gpio={fan['gpio']} enabled={fan['enabled']} state={state_text} reason={reason_text}")
+    return 0
+
+
+def run_fan_on(*, config_path: Path, fan_id: str) -> int:
+    config = _load_config(config_path)
+    if config is None:
+        return 1
+    return set_manual_fan_state(config, fan_id, FAN_ON)
+
+
+def run_fan_off(*, config_path: Path, fan_id: str) -> int:
+    config = _load_config(config_path)
+    if config is None:
+        return 1
+    return set_manual_fan_state(config, fan_id, FAN_OFF)
+
+
+def run_fan_test_command(*, config_path: Path, sleep_seconds: float) -> int:
+    config = _load_config(config_path)
+    if config is None:
+        return 1
+    return run_fan_test(config, sleep_seconds=sleep_seconds)
 
 
 def run_db_init(*, config_path: Path) -> int:
